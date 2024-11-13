@@ -18,12 +18,14 @@ import { getAllowance, getApproval, getSwap } from './helper';
 dotenv.config();
 
 const chainId = 43114; // Chain ID for AVAX
-const web3RpcUrl = "https://ava-mainnet.public.blastapi.io/ext/bc/C/rpc"; // URL for BSC node
+const web3RpcUrl = "wss://avalanche-c-chain-rpc.publicnode.com"; // URL for BSC node
 const walletAddress = "0xf58910f0dd17D70b4D8E65e64B1cE528EFb4A2e5"; // Your wallet address
 
 const broadcastApiUrl = "https://api.1inch.dev/tx-gateway/v1.1/" + chainId + "/broadcast";
 const apiBaseUrl = "https://api.1inch.dev/swap/v6.0/" + chainId;
 const web3 = new Web3(web3RpcUrl);
+const wallet = web3.eth.accounts.wallet.add(process.env.PRIVATE_KEY as string);
+
 const headers = { headers: { Authorization: `Bearer ${process.env.API_1INCH_KEY}`, accept: "application/json" } };
 
 function apiRequestUrl(methodName: any, queryParams: any) {
@@ -114,17 +116,83 @@ async function main() {
   // const swapData = await getSwap(swapUrl);
   // console.log(swapData);
 
-  const transactionForSign = await buildTxForApproveTradeWithRouter(swapParams.dst);
-  console.log("Transaction for approve: ", transactionForSign);
+  await approve(swapParams.dst);
+  await swap(swapParams);
 
-  const approveTxHash = await signAndSendTransaction(transactionForSign);
-  console.log("Approve tx hash: ", approveTxHash);
+  // const transactionForSign = await buildTxForApproveTradeWithRouter(swapParams.dst);
+  // console.log("Transaction for approve: ", transactionForSign);
 
-  const swapTransaction = await buildTxForSwap(swapParams);
-  console.log("Transaction for swap: ", swapTransaction);
+  // const approveTxHash = await signAndSendTransaction(transactionForSign);
+  // console.log("Approve tx hash: ", approveTxHash);
 
-  const swapTxHash = await signAndSendTransaction(swapTransaction);
-  console.log("Swap tx hash: ", swapTxHash);
+  // const swapTransaction = await buildTxForSwap(swapParams);
+  // console.log("Transaction for swap: ", swapTransaction);
+
+  // const swapTxHash = await signAndSendTransaction(swapTransaction);
+  // console.log("Swap tx hash: ", swapTxHash);
+}
+
+async function approve(tokenAddress: any, amount?: any) {
+  try {
+    const url = apiRequestUrl("/approve/transaction", amount ? { tokenAddress, amount } : { tokenAddress });
+
+    const transaction = await fetch(url, headers).then((res) => res.json());
+
+    const gasLimit = await web3.eth.estimateGas({
+      ...transaction,
+      from: walletAddress
+    });
+    console.log(gasLimit);
+
+    const data = {
+      ...transaction,
+      gas: gasLimit,
+      nonce: await web3.eth.getTransactionCount(walletAddress)
+    }
+
+    console.log(data);
+
+    // Sign transaction with PK
+    const createTransaction = await web3.eth.accounts.signTransaction(data, process.env.PRIVATE_KEY as string);
+    console.log(createTransaction.rawTransaction);
+
+    // Send transaction and wait for receipt
+    const tx = await web3.eth.sendSignedTransaction(createTransaction.rawTransaction);
+
+    if (tx.status) {
+      console.log("tx for approve", tx);
+      console.log("approve success!");
+    } else {
+      console.log("tx for approve", tx);
+      console.log("approve unsuccess!");
+    }
+  } catch (err) {
+    console.log("ERROR", err);
+  }
+}
+
+async function swap(swapParams: any) {
+  try {
+    const url = apiRequestUrl("/swap", swapParams);
+
+    // Fetch the swap transaction details from the API
+    const response = await fetch(url, headers)
+      .then((res) => res.json())
+      .then((res) => res.tx);
+    console.log(response);
+
+    const tx = await web3.eth.sendTransaction(response);
+    if (tx.status) {
+      console.log("tx for swap", tx);
+      console.log("swap success!");
+    } else {
+      console.log("tx for swap", tx);
+      console.log("swap unsuccess!");
+    }
+  } catch (err) {
+    console.log("ERROR", err);
+
+  }
 }
 
 async function buildTxForApproveTradeWithRouter(tokenAddress: any, amount?: any) {
