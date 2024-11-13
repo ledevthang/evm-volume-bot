@@ -15,6 +15,7 @@ import yesno from 'yesno';
 import axios from "axios";
 import { getAllowance, getApproval, getSwap } from './helper';
 
+dotenv.config();
 
 const chainId = 43114; // Chain ID for AVAX
 const web3RpcUrl = "https://ava-mainnet.public.blastapi.io/ext/bc/C/rpc"; // URL for BSC node
@@ -31,17 +32,27 @@ function apiRequestUrl(methodName: any, queryParams: any) {
 
 // Post raw transaction to the API and return transaction hash
 async function broadCastRawTransaction(rawTransaction: any) {
-  return fetch(broadcastApiUrl, {
-    method: "post",
-    body: JSON.stringify({ rawTransaction }),
-    headers: headers.headers
-  })
-    .then((res) => res.json())
-    .then((res) => {
-      console.log(res);
+  console.log("rawTransaction", rawTransaction);
+  console.log("headers.headers", headers.headers);
 
-      return res.transactionHash;
+  const broadcast = await axios.post(broadcastApiUrl,
+    { rawTransaction }
+    ,
+    {
+      headers: { accept: 'application/json', Authorization: `Bearer ${process.env.API_1INCH_KEY}` }
     });
+
+  return broadcast.data
+
+  // return fetch(broadcastApiUrl, {
+  //   method: "post",
+  //   body: JSON.stringify({ rawTransaction }),
+  //   headers: { "Content-Type": "application/json", Authorization: `Bearer ${process.env.API_1INCH_KEY}` }
+  // })
+  //   .then((res) => res.json())
+  //   .then((res) => {
+  //     return res.transactionHash;
+  //   });
 }
 
 // Sign and post a transaction, return its hash
@@ -58,6 +69,7 @@ const swapParams = {
   amount: "10000000000000000", // Amount of AVAX to swap (in wei)
   from: walletAddress,
   slippage: 1, // Maximum acceptable slippage percentage for the swap (e.g., 1 for 1%)
+  includeProtocols: true,
   disableEstimate: false, // Set to true to disable estimation of swap details
   allowPartialFill: false // Set to true to allow partial filling of the swap order
 };
@@ -84,7 +96,6 @@ const params = {
 }
 
 
-
 async function main() {
   // Passing in the eth or web3 package is necessary to allow retrieving chainId, gasPrice and nonce automatically
   // for accounts.signTransaction().
@@ -103,19 +114,18 @@ async function main() {
   // const swapData = await getSwap(swapUrl);
   // console.log(swapData);
 
-  const transactionForSign = await buildTxForApproveTradeWithRouter(swapParams.src, 10000000000000000);
+  const transactionForSign = await buildTxForApproveTradeWithRouter(swapParams.dst);
   console.log("Transaction for approve: ", transactionForSign);
 
-  // const approveTxHash = await signAndSendTransaction(transactionForSign);
-  // console.log("Approve tx hash: ", approveTxHash);
+  const approveTxHash = await signAndSendTransaction(transactionForSign);
+  console.log("Approve tx hash: ", approveTxHash);
 
-  // const swapTransaction = await buildTxForSwap(swapParams);
-  // console.log("Transaction for swap: ", swapTransaction);
+  const swapTransaction = await buildTxForSwap(swapParams);
+  console.log("Transaction for swap: ", swapTransaction);
 
-  // const swapTxHash = await signAndSendTransaction(swapTransaction);
-  // console.log("Swap tx hash: ", swapTxHash);
+  const swapTxHash = await signAndSendTransaction(swapTransaction);
+  console.log("Swap tx hash: ", swapTxHash);
 }
-
 
 async function buildTxForApproveTradeWithRouter(tokenAddress: any, amount?: any) {
   const url = apiRequestUrl("/approve/transaction", amount ? { tokenAddress, amount } : { tokenAddress });
