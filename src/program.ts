@@ -5,6 +5,7 @@ import {
 	generateApprove,
 	generateSwapCallData
 } from "./services.js"
+import type { Defender } from "@openzeppelin/defender-sdk"
 
 const NATIVE = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
 
@@ -22,6 +23,7 @@ export class Program {
 	constructor(
 		private web3: Web3,
 		private mainAccount: Web3Account,
+		private defender: Defender,
 		private config: Config
 	) {}
 
@@ -29,7 +31,7 @@ export class Program {
 		// for (let i = 1; i < 10; i++)
 		await this.trade({
 			account: this.mainAccount,
-			tradingTimes: 1
+			tradingTimes: 0
 		})
 	}
 
@@ -85,10 +87,15 @@ export class Program {
 
 		const { tx } = await generateSwapCallData(this.config.chainId, swapParams)
 
-		const result = await this.web3.eth.sendTransaction(tx)
+		const result = await this.defender.relaySigner.sendTransaction({
+			gasLimit: tx.gas,
+			speed: "average",
+			data: tx.data,
+			to: tx.to
+		})
 
 		if (result.status) {
-			console.log("swap success!")
+			console.log("swap success! >> ", result.hash)
 		}
 	}
 }

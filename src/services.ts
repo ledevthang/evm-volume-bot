@@ -1,5 +1,5 @@
 import axios from "axios"
-import type { Address, Transaction } from "web3"
+import type { Address } from "web3"
 
 const AXIOS = axios.create({
 	baseURL: "https://api.1inch.dev/swap/v6.0/",
@@ -23,7 +23,7 @@ type GenerateApproveResponse = {
 }
 
 type GernerateSwapCallDataResponse = {
-	tx: Transaction
+	tx: any
 }
 
 export type SwapParams = {
