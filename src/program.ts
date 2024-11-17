@@ -1,16 +1,18 @@
-import type { Address, Contract, Web3 } from "web3"
-import type { Web3Account } from "web3-eth-accounts"
 import {
 	type SwapParams,
 	generateApprove,
 	generateSwapCallData
 } from "./services.js"
 import fs from "node:fs/promises"
-import type { ERC20 } from "./ecc20.abi.js"
+import { generatePrivateKey, privateKeyToAccount } from "viem/accounts"
+import { parseEther } from "viem/utils"
 
-const NATIVE = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+const NATIVE = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" as const
+
+type PrivateKey = Address
+
 export type Config = {
-	chainId: number
+	chain: Chain
 	tokenAddress: Address
 	initFee: number
 	initToken: number
@@ -19,19 +21,18 @@ export type Config = {
 }
 
 type SubAccount = {
-	account: Web3Account
+	account: Account
+	pk: PrivateKey
 	tradingTimes: number
 }
-
+import type { WalletClient, PublicClient, Address, Chain, Account } from "viem"
+import { ERC20 } from "./ecc20.abi.js"
 export class Program {
 	constructor(
-		private web3: Web3,
-		private mainAccount: Web3Account,
-		private config: Config,
-		private erc20Contract: Contract<typeof ERC20>
-	) {
-		this.web3.eth.accounts.wallet.add(this.mainAccount)
-	}
+		private mainWalletClient: WalletClient,
+		private rpcClient: PublicClient,
+		private config: Config
+	) {}
 
 	public async run() {
 		let subAccounts = await this.generateAccount(
@@ -41,9 +42,9 @@ export class Program {
 		await this.initTokensAndFee(subAccounts)
 
 		for (;;) {
-			const executingAccounts = subAccounts.map(({ account }) => ({
+			const executingAccounts = subAccounts.map(({ account, pk }) => ({
 				address: account.address,
-				privateKey: account.privateKey
+				privateKey: pk
 			}))
 
 			await fs.writeFile(
@@ -64,12 +65,11 @@ export class Program {
 			const [newSubAccount] = await this.generateAccount(1)
 
 			await this.transferTokensAndFee(
-				subAccount.account.address,
+				subAccount.account,
 				newSubAccount.account.address,
 				1,
 				1
 			)
-			this.web3.eth.accounts.wallet.remove(subAccount.account.address)
 
 			return newSubAccount
 		}
@@ -87,57 +87,71 @@ export class Program {
 
 	private async approve(subAccount: SubAccount) {
 		const approveTx = await generateApprove({
-			chainId: this.config.chainId,
+			chainId: this.config.chain.id,
 			tokenAddress: this.config.tokenAddress
 		})
 
-		const gasLimit = await this.web3.eth.estimateGas({
-			...approveTx,
-			from: subAccount.account.address
+		const gasLimit = await this.rpcClient.estimateGas({
+			data: approveTx.data,
+			account: subAccount.account,
+			gasPrice: BigInt(approveTx.gasPrice),
+			to: approveTx.to,
+			value: BigInt(approveTx.value)
 		})
 
-		const data = {
-			...approveTx,
-			gas: gasLimit,
-			nonce: await this.web3.eth.getTransactionCount(subAccount.account.address)
-		}
+		// const data = {
+		// 	data: approveTx.data,
+		// 	account: subAccount.account,
+		// 	gasPrice: BigInt(approveTx.gasPrice),
+		// 	to: approveTx.to,
+		// 	value: BigInt(approveTx.value),
+		// 	gas: gasLimit,
+		// 	nonce: await this.rpcClient.getTransactionCount({
+		// 		address: subAccount.account.address
+		// 	})
+		// }
 
-		const { rawTransaction } = await this.web3.eth.accounts.signTransaction(
-			data,
-			subAccount.account.privateKey
-		)
+		const rawTransaction = await this.mainWalletClient.signTransaction({
+			chain: this.config.chain,
+			account: subAccount.account
+		})
 
-		const tx = await this.web3.eth.sendSignedTransaction(rawTransaction)
-
-		if (tx.status) {
-			console.log(`approve success from account ${subAccount.account.address}`)
-		}
+		await this.mainWalletClient.sendRawTransaction({
+			serializedTransaction: rawTransaction
+		})
 	}
 
 	private async swap(subAccount: SubAccount) {
 		const [src, dst] = this.getSrcAndDst(subAccount)
 
 		const swapParams: SwapParams = {
-			amount: this.web3.utils.toWei("0.001", "ether"),
+			amount: parseEther("0.001").toString(),
 			src,
 			dst,
 			from: subAccount.account.address,
 			slippage: 1
 		}
 
-		const { tx } = await generateSwapCallData(this.config.chainId, swapParams)
+		const { tx } = await generateSwapCallData(this.config.chain.id, swapParams)
 
-		const result = await this.web3.eth.sendTransaction(tx)
+		await this.mainWalletClient.sendTransaction({
+			account: subAccount.account,
+			chain: this.config.chain,
+			data: tx.data,
+			from: tx.from,
+			gas: BigInt(tx.gas),
+			gasPrice: BigInt(tx.gasPrice),
+			to: tx.to,
+			value: BigInt(tx.value)
+		})
 
-		if (result.status) {
-			console.log(`swap success from account ${subAccount.account.address}`)
-		}
+		console.log(`swap success from account ${subAccount.account.address}`)
 	}
 
 	private async initTokensAndFee(subAccounts: SubAccount[]) {
 		for (const subAccount of subAccounts) {
 			await this.transferTokensAndFee(
-				this.mainAccount.address,
+				this.mainAccount(),
 				subAccount.account.address,
 				this.config.initToken,
 				this.config.initFee
@@ -148,49 +162,54 @@ export class Program {
 	}
 
 	private async transferTokensAndFee(
-		from: Address,
+		from: Account,
 		to: Address,
 		tokenAmount: number,
 		feeAmount: number
 	) {
-		const tx = await this.web3.eth.accounts.signTransaction(
-			{
-				from,
-				to,
-				value: this.web3.utils.toWei(feeAmount, "ether")
-			},
-			this.mainAccount.privateKey
+		const transferFee = await this.mainWalletClient.sendTransaction({
+			from,
+			to,
+			value: parseEther(feeAmount.toString()),
+			chain: this.config.chain,
+			account: from
+		})
+
+		console.log(
+			`transfered fee from ${from} to ${to}  amount ${feeAmount} >> hash ${transferFee}`
 		)
 
-		await this.web3.eth.sendTransaction(tx)
+		const transferTokens = await this.mainWalletClient.writeContract({
+			address: this.config.tokenAddress,
+			abi: ERC20,
+			account: from,
+			functionName: "transfer",
+			chain: this.config.chain,
+			args: [to, parseEther(tokenAmount.toString())]
+		})
 
-		console.log(`transfered fee from ${from} to ${to} >> amount ${feeAmount}`)
-
-		await this.erc20Contract.methods
-			.transfer(to, this.web3.utils.toWei(this.config.initToken, "ether"))
-			.send({
-				from
-			})
-
-		console.log(`transfered tokens from ${from} to ${to} ${tokenAmount}`)
+		console.log(
+			`transfered tokens from ${from} to ${to} ${tokenAmount} >> hash ${transferTokens}`
+		)
 	}
 
 	private async generateAccount(quantity: number): Promise<SubAccount[]> {
 		return Promise.all(
 			new Array(quantity).fill(1).map(async () => {
-				const account = this.web3.eth.accounts.create()
+				const randomPk = generatePrivateKey()
+				const account = privateKeyToAccount(randomPk)
+
 				const data = JSON.stringify({
 					address: account.address,
-					privateKey: account.privateKey
+					privateKey: randomPk
 				})
-
-				this.web3.eth.accounts.wallet.add(account)
 
 				await fs.appendFile("wallets.txt", `${data}\n`)
 
 				return {
 					account,
-					tradingTimes: 0
+					tradingTimes: 0,
+					pk: randomPk
 				}
 			})
 		)
@@ -200,6 +219,10 @@ export class Program {
 		return subAccount.tradingTimes % 2 === 0
 			? [NATIVE, this.config.tokenAddress]
 			: [this.config.tokenAddress, NATIVE]
+	}
+
+	private mainAccount(): Account {
+		return this.mainWalletClient.account!
 	}
 }
 

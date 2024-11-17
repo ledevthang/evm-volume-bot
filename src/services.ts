@@ -1,5 +1,5 @@
 import axios from "axios"
-import type { Address, Transaction } from "web3"
+import type { Address, Hex } from "viem"
 
 const AXIOS = axios.create({
 	baseURL: "https://api.1inch.dev/swap/v6.0/",
@@ -16,14 +16,21 @@ type GenerateApproveParams = {
 }
 
 type GenerateApproveResponse = {
-	data: string
+	data: Hex
 	gasPrice: string
-	to: string
+	to: Address
 	value: string
 }
 
 type GernerateSwapCallDataResponse = {
-	tx: Transaction
+	tx: {
+		from: Address
+		to: Address
+		data: Hex
+		value: string
+		gasPrice: string
+		gas: number
+	}
 }
 
 export type SwapParams = {
