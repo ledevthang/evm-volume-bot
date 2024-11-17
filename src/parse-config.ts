@@ -14,6 +14,8 @@ export function parseConfig() {
 	const { CHAIN, PRIVATE_KEY, RPC } = schema.parse(process.env)
 
 	return {
+		pk: PRIVATE_KEY,
+		rpc: RPC,
 		config: {
 			chain: CHAIN === "avax" ? avalanche : mainnet,
 			initFee: 0.01,
@@ -21,8 +23,6 @@ export function parseConfig() {
 			subAccountConcurrency: 1,
 			subAccountTradingMax: 3,
 			tokenAddress: "0xb31f66aa3c1e785363f0875a1b74e27b85fd66c7"
-		} satisfies Config,
-		pk: PRIVATE_KEY,
-		rpc: RPC
+		} satisfies Config
 	}
 }

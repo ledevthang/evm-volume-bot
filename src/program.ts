@@ -1,11 +1,9 @@
-import {
-	type SwapParams,
-	generateApprove,
-	generateSwapCallData
-} from "./services.js"
+import { generateApprove, generateSwapCallData } from "./services.js"
 import fs from "node:fs/promises"
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts"
 import { parseEther } from "viem/utils"
+import type { WalletClient, PublicClient, Address, Chain, Account } from "viem"
+import { ERC20 } from "./ecc20.abi.js"
 
 const NATIVE = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" as const
 
@@ -25,8 +23,6 @@ type SubAccount = {
 	pk: PrivateKey
 	tradingTimes: number
 }
-import type { WalletClient, PublicClient, Address, Chain, Account } from "viem"
-import { ERC20 } from "./ecc20.abi.js"
 export class Program {
 	constructor(
 		private mainWalletClient: WalletClient,
@@ -56,7 +52,7 @@ export class Program {
 				subAccounts.map(subAccount => this.trade(subAccount))
 			)
 
-			await sleep(10e3)
+			await sleep(10e6)
 		}
 	}
 
@@ -91,57 +87,43 @@ export class Program {
 			tokenAddress: this.config.tokenAddress
 		})
 
-		const gasLimit = await this.rpcClient.estimateGas({
-			data: approveTx.data,
+		const tx = {
 			account: subAccount.account,
-			gasPrice: BigInt(approveTx.gasPrice),
+			data: approveTx.data,
 			to: approveTx.to,
+			gasPrice: BigInt(approveTx.gasPrice),
 			value: BigInt(approveTx.value)
-		})
+		}
 
-		// const data = {
-		// 	data: approveTx.data,
-		// 	account: subAccount.account,
-		// 	gasPrice: BigInt(approveTx.gasPrice),
-		// 	to: approveTx.to,
-		// 	value: BigInt(approveTx.value),
-		// 	gas: gasLimit,
-		// 	nonce: await this.rpcClient.getTransactionCount({
-		// 		address: subAccount.account.address
-		// 	})
-		// }
+		const estimateGas = await this.rpcClient.estimateGas(tx)
 
-		const rawTransaction = await this.mainWalletClient.signTransaction({
+		console.log("estimateGas: ", estimateGas)
+
+		await this.mainWalletClient.sendTransaction({
 			chain: this.config.chain,
-			account: subAccount.account
-		})
-
-		await this.mainWalletClient.sendRawTransaction({
-			serializedTransaction: rawTransaction
+			...tx
 		})
 	}
 
 	private async swap(subAccount: SubAccount) {
 		const [src, dst] = this.getSrcAndDst(subAccount)
 
-		const swapParams: SwapParams = {
+		const { tx } = await generateSwapCallData(this.config.chain.id, {
 			amount: parseEther("0.001").toString(),
 			src,
 			dst,
 			from: subAccount.account.address,
 			slippage: 1
-		}
-
-		const { tx } = await generateSwapCallData(this.config.chain.id, swapParams)
+		})
 
 		await this.mainWalletClient.sendTransaction({
 			account: subAccount.account,
 			chain: this.config.chain,
 			data: tx.data,
 			from: tx.from,
+			to: tx.to,
 			gas: BigInt(tx.gas),
 			gasPrice: BigInt(tx.gasPrice),
-			to: tx.to,
 			value: BigInt(tx.value)
 		})
 
