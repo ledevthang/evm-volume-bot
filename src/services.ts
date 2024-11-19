@@ -2,6 +2,8 @@ import axios, { isAxiosError } from "axios"
 import type { Address, Hex } from "viem"
 import { sleep } from "./sleep.js"
 import { DateTime } from "luxon"
+import { OneInchError, type Result, UnknownError } from "./error.js"
+import { Duration, Effect, pipe, Schedule } from "effect"
 
 type GenerateApproveParams = {
 	chainId: number
@@ -50,18 +52,26 @@ export class OneInch {
 	private lastimeCalling = DateTime.now()
 	private restTimeInMiliSeconds = 3000
 
-	generateApprove(params: GenerateApproveParams) {
-		return this.handle429(() => this.unsafeGenerateApprove(params))
+	generateApprove(
+		params: GenerateApproveParams
+	): Result<GenerateApproveResponse, OneInchError | UnknownError> {
+		return this.handle429AndRetry(() => this.unsafeGenerateApprove(params))
 	}
 
-	generateSwapCallData(chainId: number, params: SwapParams) {
-		return this.handle429(() =>
+	generateSwapCallData(
+		chainId: number,
+		params: SwapParams
+	): Result<GernerateSwapCallDataResponse, OneInchError | UnknownError> {
+		return this.handle429AndRetry(() =>
 			this.unsafeGenerateSwapCallData(chainId, params)
 		)
 	}
 
-	spotPrice<T extends Address>(chainId: number, address: T[]) {
-		return this.handle429(() => this.unsafeSpotPrice(chainId, address))
+	spotPrice<T extends Address>(
+		chainId: number,
+		address: T[]
+	): Result<Record<T, string>, OneInchError | UnknownError> {
+		return this.handle429AndRetry(() => this.unsafeSpotPrice(chainId, address))
 	}
 
 	private async unsafeGenerateApprove({
@@ -85,7 +95,7 @@ export class OneInch {
 	private async unsafeGenerateSwapCallData(
 		chainId: number,
 		params: SwapParams
-	): Promise<GernerateSwapCallDataResponse> {
+	) {
 		const response = await this.AXIOS.get(`${chainId}/swap`, {
 			params
 		})
@@ -101,39 +111,33 @@ export class OneInch {
 			`https://api.1inch.dev/price/v1.1/${chainId}/${address}?currency=USD`
 		)
 
-		await sleep(2000)
-
 		return response.data
 	}
 
-	private async handle429<T>(thunk: () => Promise<T>): Promise<T> {
-		while (
-			DateTime.now().toSeconds() - this.lastimeCalling.toSeconds() >
-			this.restTimeInMiliSeconds
-		) {
-			await sleep(1000)
-		}
+	private handle429AndRetry<T>(
+		thunk: () => Promise<T>
+	): Result<T, OneInchError | UnknownError> {
+		return pipe(
+			Effect.tryPromise({
+				try: async () => {
+					while (
+						DateTime.now().toSeconds() - this.lastimeCalling.toSeconds() >
+						this.restTimeInMiliSeconds
+					) {
+						await sleep(1000)
+					}
 
-		const result = await thunk().catch(error => {
-			if (isAxiosError(error)) {
-				throw new Error(
-					JSON.stringify(
-						{
-							code: error.code,
-							message: error.message,
-							response: error.response?.data
-						},
-						null,
-						2
-					)
-				)
-			}
-
-			throw error
-		})
-
-		await sleep(this.restTimeInMiliSeconds)
-
-		return result
+					return thunk()
+				},
+				catch: error => {
+					if (isAxiosError(error)) return new OneInchError(error)
+					return new UnknownError(error)
+				}
+			}),
+			Effect.tap(() => {
+				Effect.sleep(Duration.millis(this.restTimeInMiliSeconds))
+			}),
+			Effect.retry({ times: 6, schedule: Schedule.fixed("1500 millis") })
+		)
 	}
 }
