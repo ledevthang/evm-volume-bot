@@ -1,6 +1,6 @@
 import { isHex } from "viem"
 import { z } from "zod"
-import type { Config } from "./program"
+import type { Config } from "./program.js"
 import { avalanche, mainnet } from "viem/chains"
 
 export function parseConfig() {
@@ -18,10 +18,10 @@ export function parseConfig() {
 		rpc: RPC,
 		config: {
 			chain: CHAIN === "avax" ? avalanche : mainnet,
-			initFee: 0.01,
-			initToken: 0.01,
+			initFee: 0.1,
+			initToken: 0.05,
 			subAccountConcurrency: 1,
-			subAccountTradingMax: 3,
+			subAccountTradingMax: 6,
 			tokenAddress: "0xb31f66aa3c1e785363f0875a1b74e27b85fd66c7"
 		} satisfies Config
 	}
