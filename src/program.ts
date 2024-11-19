@@ -1,16 +1,25 @@
-import type { Address, Contract, Web3 } from "web3"
-import type { Web3Account } from "web3-eth-accounts"
-import {
-	type SwapParams,
-	generateApprove,
-	generateSwapCallData
-} from "./services.js"
 import fs from "node:fs/promises"
-import type { ERC20 } from "./ecc20.abi.js"
+import { generatePrivateKey, privateKeyToAccount } from "viem/accounts"
+import { formatEther, parseEther } from "viem/utils"
+import type {
+	WalletClient,
+	PublicClient,
+	Address,
+	Chain,
+	Account,
+	Hex
+} from "viem"
+import { ERC20 } from "./ecc20.abi.js"
+import { sleep } from "./sleep.js"
+import { OneInch } from "./services.js"
+import { DateTime } from "luxon"
 
-const NATIVE = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+const NATIVE = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" as const
+
+type PrivateKey = Address
+
 export type Config = {
-	chainId: number
+	chain: Chain
 	tokenAddress: Address
 	initFee: number
 	initToken: number
@@ -19,19 +28,25 @@ export type Config = {
 }
 
 type SubAccount = {
-	account: Web3Account
+	account: Account
+	pk: PrivateKey
 	tradingTimes: number
 }
 
+type TransferParams = {
+	from: Account
+	to: Address
+	amount: bigint
+}
+
 export class Program {
+	private oneInchClient = new OneInch()
+
 	constructor(
-		private web3: Web3,
-		private mainAccount: Web3Account,
-		private config: Config,
-		private erc20Contract: Contract<typeof ERC20>
-	) {
-		this.web3.eth.accounts.wallet.add(this.mainAccount)
-	}
+		private mainWalletClient: WalletClient,
+		private rpcClient: PublicClient,
+		private config: Config
+	) {}
 
 	public async run() {
 		let subAccounts = await this.generateAccount(
@@ -41,21 +56,25 @@ export class Program {
 		await this.initTokensAndFee(subAccounts)
 
 		for (;;) {
-			const executingAccounts = subAccounts.map(({ account }) => ({
+			const executingAccounts = subAccounts.map(({ account, pk }) => ({
 				address: account.address,
-				privateKey: account.privateKey
+				privateKey: pk
 			}))
 
 			await fs.writeFile(
 				"executing-wallets.txt",
-				`${JSON.stringify(executingAccounts, null, 1)}\n`
+				`${JSON.stringify(executingAccounts, null, 1)}`
 			)
 
 			subAccounts = await Promise.all(
 				subAccounts.map(subAccount => this.trade(subAccount))
 			)
 
-			await sleep(10e3)
+			console.log(
+				`switch to new accounts ${subAccounts.map(account => account.account.address)}`
+			)
+
+			await sleep(3_000)
 		}
 	}
 
@@ -63,13 +82,43 @@ export class Program {
 		if (subAccount.tradingTimes === this.config.subAccountTradingMax) {
 			const [newSubAccount] = await this.generateAccount(1)
 
-			await this.transferTokensAndFee(
-				subAccount.account.address,
-				newSubAccount.account.address,
-				1,
-				1
+			let [balance, tokenBalance] = await this.getBalanceAndTokenBalance(
+				subAccount.account.address
 			)
-			this.web3.eth.accounts.wallet.remove(subAccount.account.address)
+
+			const transferGas = await this.rpcClient.estimateGas({
+				to: newSubAccount.account.address,
+				account: subAccount.account
+			})
+
+			const transferTokenGas = await this.rpcClient.estimateContractGas({
+				address: this.config.tokenAddress,
+				abi: ERC20,
+				account: subAccount.account,
+				functionName: "transfer",
+				args: [newSubAccount.account.address, tokenBalance]
+			})
+
+			const gasPrice = await this.rpcClient.getGasPrice()
+
+			await this.transferToken({
+				from: subAccount.account,
+				to: newSubAccount.account.address,
+				amount: bigint_percent(tokenBalance, 100)
+			})
+
+			balance = await this.rpcClient.getBalance({
+				address: subAccount.account.address
+			})
+
+			await this.transferNative({
+				from: subAccount.account,
+				to: newSubAccount.account.address,
+				amount: bigint_percent(
+					balance - transferGas * gasPrice - transferTokenGas * gasPrice,
+					90
+				)
+			})
 
 			return newSubAccount
 		}
@@ -86,123 +135,255 @@ export class Program {
 	}
 
 	private async approve(subAccount: SubAccount) {
-		const approveTx = await generateApprove({
-			chainId: this.config.chainId,
+		const approveTx = await this.oneInchClient.generateApprove({
+			chainId: this.config.chain.id,
 			tokenAddress: this.config.tokenAddress
 		})
 
-		const gasLimit = await this.web3.eth.estimateGas({
-			...approveTx,
-			from: subAccount.account.address
+		const hash = await this.mainWalletClient.sendTransaction({
+			chain: this.config.chain,
+			account: subAccount.account,
+			data: approveTx.data,
+			to: approveTx.to,
+			gasPrice: BigInt(approveTx.gasPrice),
+			value: BigInt(approveTx.value)
 		})
 
-		const data = {
-			...approveTx,
-			gas: gasLimit,
-			nonce: await this.web3.eth.getTransactionCount(subAccount.account.address)
-		}
+		await this.rpcClient.waitForTransactionReceipt({ hash })
 
-		const { rawTransaction } = await this.web3.eth.accounts.signTransaction(
-			data,
-			subAccount.account.privateKey
+		console.log(
+			`${subAccount.account.address} has approved token ${this.config.tokenAddress} on 1inch`
 		)
-
-		const tx = await this.web3.eth.sendSignedTransaction(rawTransaction)
-
-		if (tx.status) {
-			console.log(`approve success from account ${subAccount.account.address}`)
-		}
 	}
 
 	private async swap(subAccount: SubAccount) {
-		const [src, dst] = this.getSrcAndDst(subAccount)
+		const { amount, dst, src } = await this.calculateBeforeSwap(subAccount)
 
-		const swapParams: SwapParams = {
-			amount: this.web3.utils.toWei("0.001", "ether"),
-			src,
-			dst,
-			from: subAccount.account.address,
-			slippage: 1
-		}
+		const { tx, dstAmount } = await this.oneInchClient.generateSwapCallData(
+			this.config.chain.id,
+			{
+				amount: amount.toString(),
+				src,
+				dst,
+				from: subAccount.account.address,
+				slippage: 1
+			}
+		)
 
-		const { tx } = await generateSwapCallData(this.config.chainId, swapParams)
+		const hash = await this.mainWalletClient.sendTransaction({
+			account: subAccount.account,
+			chain: this.config.chain,
+			data: tx.data,
+			from: tx.from,
+			to: tx.to,
+			gas: BigInt(tx.gas),
+			gasPrice: BigInt(tx.gasPrice),
+			value: BigInt(tx.value)
+		})
 
-		const result = await this.web3.eth.sendTransaction(tx)
+		await this.rpcClient.waitForTransactionReceipt({ hash })
 
-		if (result.status) {
-			console.log(`swap success from account ${subAccount.account.address}`)
-		}
+		console.log(
+			`${subAccount.account.address} has swapped with ${formatEther(amount)} ${src} to ${formatEther(BigInt(dstAmount))} ${dst}`
+		)
 	}
 
 	private async initTokensAndFee(subAccounts: SubAccount[]) {
 		for (const subAccount of subAccounts) {
-			await this.transferTokensAndFee(
-				this.mainAccount.address,
-				subAccount.account.address,
-				this.config.initToken,
-				this.config.initFee
-			)
+			await this.transferNative({
+				from: this.mainAccount(),
+				to: subAccount.account.address,
+				amount: parseEther(this.config.initFee.toString())
+			})
+
+			await this.transferToken({
+				from: this.mainAccount(),
+				amount: parseEther(this.config.initToken.toString()),
+				to: subAccount.account.address
+			})
 		}
 
 		console.log("initialized tokens and fee")
 	}
 
-	private async transferTokensAndFee(
-		from: Address,
-		to: Address,
-		tokenAmount: number,
-		feeAmount: number
-	) {
-		const tx = await this.web3.eth.accounts.signTransaction(
-			{
-				from,
-				to,
-				value: this.web3.utils.toWei(feeAmount, "ether")
-			},
-			this.mainAccount.privateKey
+	private async transferNative({ amount, from, to }: TransferParams) {
+		const hash = await this.mainWalletClient.sendTransaction({
+			from,
+			to,
+			value: amount,
+			chain: this.config.chain,
+			account: from
+		})
+
+		await this.rpcClient.waitForTransactionReceipt({ hash })
+
+		console.log(
+			`transfered native from ${from.address} to ${to} ${formatEther(amount)}`
 		)
+	}
 
-		await this.web3.eth.sendTransaction(tx)
+	private async transferToken({ amount, from, to }: TransferParams) {
+		const hash = await this.mainWalletClient.writeContract({
+			address: this.config.tokenAddress,
+			abi: ERC20,
+			account: from,
+			functionName: "transfer",
+			chain: this.config.chain,
+			args: [to, amount]
+		})
 
-		console.log(`transfered fee from ${from} to ${to} >> amount ${feeAmount}`)
+		await this.rpcClient.waitForTransactionReceipt({ hash })
 
-		await this.erc20Contract.methods
-			.transfer(to, this.web3.utils.toWei(this.config.initToken, "ether"))
-			.send({
-				from
-			})
-
-		console.log(`transfered tokens from ${from} to ${to} ${tokenAmount}`)
+		console.log(
+			`transfered tokens from ${from.address} to ${to} ${formatEther(amount)}`
+		)
 	}
 
 	private async generateAccount(quantity: number): Promise<SubAccount[]> {
 		return Promise.all(
 			new Array(quantity).fill(1).map(async () => {
-				const account = this.web3.eth.accounts.create()
+				const randomPk = generatePrivateKey()
+				const account = privateKeyToAccount(randomPk)
+
 				const data = JSON.stringify({
 					address: account.address,
-					privateKey: account.privateKey
+					privateKey: randomPk,
+					createdAt: DateTime.now().toISO()
 				})
 
-				this.web3.eth.accounts.wallet.add(account)
-
-				await fs.appendFile("wallets.txt", `${data}\n`)
+				await fs.appendFile("wallets.txt", `\n${data}`)
 
 				return {
 					account,
-					tradingTimes: 0
+					tradingTimes: 0,
+					pk: randomPk
 				}
 			})
 		)
 	}
 
-	private getSrcAndDst(subAccount: SubAccount) {
-		return subAccount.tradingTimes % 2 === 0
-			? [NATIVE, this.config.tokenAddress]
-			: [this.config.tokenAddress, NATIVE]
+	private async calculateBeforeSwap(subAccount: SubAccount) {
+		const [balance, tokenBalance] = await this.getBalanceAndTokenBalance(
+			subAccount.account.address
+		)
+
+		const price = await this.oneInchClient.spotPrice(this.config.chain.id, [
+			NATIVE,
+			this.config.tokenAddress
+		])
+
+		const nativePriceInUSD = Number(price[NATIVE])
+		const tokenPriceInUSD = Number(price[this.config.tokenAddress])
+
+		const balanceInUsd = Number(formatEther(balance)) * nativePriceInUSD
+
+		const tokenBalanceInUsd =
+			Number(formatEther(tokenBalance)) * tokenPriceInUSD
+
+		console.log("before swap $: ", { balanceInUsd, tokenBalanceInUsd })
+
+		const target = (balanceInUsd + tokenBalanceInUsd) / 2
+
+		if (balanceInUsd > tokenBalanceInUsd) {
+			const amount = balanceInUsd - target + percent(balanceInUsd, 20)
+
+			return {
+				amount: parseEther((amount / nativePriceInUSD).toString()),
+				src: NATIVE,
+				dst: this.config.tokenAddress
+			}
+		}
+
+		const amount = tokenBalanceInUsd - target + percent(tokenBalanceInUsd, 20)
+
+		return {
+			amount: parseEther((amount / tokenPriceInUSD).toString()),
+			src: this.config.tokenAddress,
+			dst: NATIVE
+		}
+	}
+
+	private async getBalanceAndTokenBalance(address: Address) {
+		const balance = await this.rpcClient.getBalance({
+			address
+		})
+
+		const tokenBalance = await this.rpcClient.readContract({
+			abi: ERC20,
+			functionName: "balanceOf",
+			args: [address],
+			address: this.config.tokenAddress
+		})
+
+		return [balance, tokenBalance]
+	}
+
+	private mainAccount(): Account {
+		return this.mainWalletClient.account!
+	}
+
+	public async withdraw(accounts: { address: Address; privateKey: Hex }[]) {
+		const mainAddress = this.mainAccount().address
+
+		for (const account of accounts) {
+			const wallet = privateKeyToAccount(account.privateKey)
+
+			let [balance, tokenBalance] = await this.getBalanceAndTokenBalance(
+				account.address
+			)
+
+			console.log(`${account.address} balance >> ${formatEther(balance)}`)
+			console.log(
+				`${account.address} token_balance >> ${formatEther(tokenBalance)}`
+			)
+
+			const gasPrice = await this.rpcClient.getGasPrice()
+
+			if (tokenBalance > BigInt(0)) {
+				await this.rpcClient.estimateContractGas({
+					address: this.config.tokenAddress,
+					abi: ERC20,
+					account: wallet,
+					functionName: "transfer",
+					args: [mainAddress, tokenBalance]
+				})
+
+				await this.transferToken({
+					from: wallet,
+					to: mainAddress,
+					amount: tokenBalance
+				})
+
+				console.log("done with draw tokens")
+			}
+
+			if (balance > BigInt(0)) {
+				balance = await this.rpcClient.getBalance({ address: wallet.address })
+
+				const transferGas = await this.rpcClient.estimateGas({
+					to: mainAddress,
+					account: wallet
+				})
+
+				await this.transferNative({
+					from: wallet,
+					to: mainAddress,
+					amount:
+						balance -
+						transferGas * gasPrice -
+						bigint_percent(transferGas * gasPrice, 95)
+				})
+
+				console.log("done with draw native")
+			}
+		}
 	}
 }
 
-function sleep(duration: number) {
-	return new Promise(res => setTimeout(res, duration))
+function percent(value: number, percent: number) {
+	return (value / 100) * percent
+}
+
+function bigint_percent(value: bigint, percent: number) {
+	return (value / 100n) * BigInt(percent)
 }
