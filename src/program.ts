@@ -311,10 +311,13 @@ export class Program {
 		const tokenBalanceInUsd =
 			Number(formatEther(tokenBalance)) * tokenPriceInUSD
 
-		console.log(`before swap $ ${subAccount.account.address}:`, {
-			balanceInUsd,
-			tokenBalanceInUsd
-		})
+		console.log(
+			`before swap ${subAccount.tradingTimes} ${subAccount.account.address}:`,
+			{
+				balanceInUsd,
+				tokenBalanceInUsd
+			}
+		)
 
 		const target = (balanceInUsd + tokenBalanceInUsd) / 2
 
