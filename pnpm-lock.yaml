@@ -14,6 +14,9 @@ importers:
       luxon:
         specifier: ^3.5.0
         version: 3.5.0
+      ts-retry-promise:
+        specifier: ^0.8.1
+        version: 0.8.1
       viem:
         specifier: ^2.21.47
         version: 2.21.47(typescript@5.6.3)(zod@3.23.8)
@@ -1138,6 +1141,10 @@ packages:
   trim-repeated@2.0.0:
     resolution: {integrity: sha512-QUHBFTJGdOwmp0tbOG505xAgOp/YliZP/6UgafFXYZ26WT1bvQmSMJUvkeVSASuJJHbqsFbynTvkd5W8RBTipg==}
     engines: {node: '>=12'}
+
+  ts-retry-promise@0.8.1:
+    resolution: {integrity: sha512-+AHPUmAhr5bSRRK5CurE9kNH8gZlEHnCgusZ0zy2bjfatUBDX0h6vGQjiT0YrGwSDwRZmU+bapeX6mj55FOPvg==}
+    engines: {node: '>=6'}
 
   tunnel-agent@0.6.0:
     resolution: {integrity: sha512-McnNiV1l8RYeY8tBgEpuodCC1mLUdbSN+CYBL7kJsJNInOP8UjDDEwdk6Mw60vdLLrr5NHKZhMAOSrR2NZuQ+w==}
@@ -2284,6 +2291,8 @@ snapshots:
   trim-repeated@2.0.0:
     dependencies:
       escape-string-regexp: 5.0.0
+
+  ts-retry-promise@0.8.1: {}
 
   tunnel-agent@0.6.0:
     dependencies:

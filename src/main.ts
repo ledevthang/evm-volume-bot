@@ -1,12 +1,12 @@
 import { Program } from "./program.js"
 import { parseConfig } from "./parse-config.js"
 import { privateKeyToAccount } from "viem/accounts"
-import { createPublicClient, createWalletClient, http } from "viem"
+import { createPublicClient, createWalletClient, fallback, http } from "viem"
 
 async function main() {
-	const { config, pk, rpc } = parseConfig()
+	const { config, pk, rpc1, rpc2 } = parseConfig()
 
-	const transport = http(rpc)
+	const transport = fallback([http(rpc1), http(rpc2)])
 
 	const rpcClient = createPublicClient({
 		transport

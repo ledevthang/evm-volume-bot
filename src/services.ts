@@ -1,7 +1,8 @@
-import axios, { isAxiosError } from "axios"
+import axios, { type AxiosError, isAxiosError } from "axios"
 import type { Address, Hex } from "viem"
-import { sleep } from "./sleep.js"
+import { sleep } from "./utils.js"
 import { DateTime } from "luxon"
+import { retry } from "ts-retry-promise"
 
 type GenerateApproveParams = {
 	chainId: number
@@ -114,26 +115,35 @@ export class OneInch {
 			await sleep(1000)
 		}
 
-		const result = await thunk().catch(error => {
-			if (isAxiosError(error)) {
-				throw new Error(
-					JSON.stringify(
-						{
-							code: error.code,
-							message: error.message,
-							response: error.response?.data
-						},
-						null,
-						2
-					)
-				)
-			}
-
+		const result = await retry(thunk, {
+			retries: 6,
+			delay: 1500,
+			timeout: "INFINITELY"
+		}).catch(error => {
+			if (isAxiosError(error)) throw new OneInchError(error)
 			throw error
 		})
 
 		await sleep(this.restTimeInMiliSeconds)
 
 		return result
+	}
+}
+
+export class OneInchError {
+	constructor(private error: AxiosError) {}
+
+	public display() {
+		console.error(
+			`OneInch Error: ${JSON.stringify(
+				{
+					code: this.error.code,
+					message: this.error.message,
+					response: this.error.response?.data
+				},
+				null,
+				1
+			)}`
+		)
 	}
 }

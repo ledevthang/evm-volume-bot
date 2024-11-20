@@ -10,7 +10,7 @@ import type {
 	Hex
 } from "viem"
 import { ERC20 } from "./ecc20.abi.js"
-import { sleep } from "./sleep.js"
+import { isInsufficientError, sleep, tryToInsufficient } from "./utils.js"
 import { OneInch } from "./services.js"
 import { DateTime } from "luxon"
 
@@ -56,6 +56,11 @@ export class Program {
 		await this.initTokensAndFee(subAccounts)
 
 		for (;;) {
+			if (subAccounts.length === 0) {
+				console.log("🦀 🦀 🦀 All sub_accounts are insufficient >> finished")
+				return
+			}
+
 			const executingAccounts = subAccounts.map(({ account, pk }) => ({
 				address: account.address,
 				privateKey: pk
@@ -66,13 +71,22 @@ export class Program {
 				`${JSON.stringify(executingAccounts, null, 1)}`
 			)
 
-			subAccounts = await Promise.all(
-				subAccounts.map(subAccount => this.trade(subAccount))
+			const rs = await Promise.allSettled(
+				subAccounts.map(async subAccount =>
+					tryToInsufficient(() => this.trade(subAccount))
+				)
 			)
 
-			console.log(
-				`switch to new accounts ${subAccounts.map(account => account.account.address)}`
-			)
+			subAccounts = []
+
+			for (const result of rs) {
+				if (result.status === "fulfilled") subAccounts.push(result.value)
+			}
+
+			if (subAccounts.length > 0)
+				console.log(
+					`switch to new accounts ${subAccounts.map(account => account.account.address)}`
+				)
 
 			await sleep(3_000)
 		}
@@ -80,47 +94,10 @@ export class Program {
 
 	private async trade(subAccount: SubAccount): Promise<SubAccount> {
 		if (subAccount.tradingTimes === this.config.subAccountTradingMax) {
-			const [newSubAccount] = await this.generateAccount(1)
+			const newsubAccount =
+				await this.createNewSubAccountAndTransferAssets(subAccount)
 
-			let [balance, tokenBalance] = await this.getBalanceAndTokenBalance(
-				subAccount.account.address
-			)
-
-			const transferGas = await this.rpcClient.estimateGas({
-				to: newSubAccount.account.address,
-				account: subAccount.account
-			})
-
-			const transferTokenGas = await this.rpcClient.estimateContractGas({
-				address: this.config.tokenAddress,
-				abi: ERC20,
-				account: subAccount.account,
-				functionName: "transfer",
-				args: [newSubAccount.account.address, tokenBalance]
-			})
-
-			const gasPrice = await this.rpcClient.getGasPrice()
-
-			await this.transferToken({
-				from: subAccount.account,
-				to: newSubAccount.account.address,
-				amount: bigint_percent(tokenBalance, 100)
-			})
-
-			balance = await this.rpcClient.getBalance({
-				address: subAccount.account.address
-			})
-
-			await this.transferNative({
-				from: subAccount.account,
-				to: newSubAccount.account.address,
-				amount: bigint_percent(
-					balance - transferGas * gasPrice - transferTokenGas * gasPrice,
-					90
-				)
-			})
-
-			return newSubAccount
+			return newsubAccount
 		}
 
 		if (subAccount.tradingTimes === 0) {
@@ -132,6 +109,50 @@ export class Program {
 		subAccount.tradingTimes++
 
 		return this.trade(subAccount)
+	}
+
+	private async createNewSubAccountAndTransferAssets(subAccount: SubAccount) {
+		const [newSubAccount] = await this.generateAccount(1)
+
+		let [balance, tokenBalance] = await this.getBalanceAndTokenBalance(
+			subAccount.account.address
+		)
+
+		const transferGas = await this.rpcClient.estimateGas({
+			to: newSubAccount.account.address,
+			account: subAccount.account
+		})
+
+		const transferTokenGas = await this.rpcClient.estimateContractGas({
+			address: this.config.tokenAddress,
+			abi: ERC20,
+			account: subAccount.account,
+			functionName: "transfer",
+			args: [newSubAccount.account.address, tokenBalance]
+		})
+
+		const gasPrice = await this.rpcClient.getGasPrice()
+
+		await this.transferToken({
+			from: subAccount.account,
+			to: newSubAccount.account.address,
+			amount: bigint_percent(tokenBalance, 100)
+		})
+
+		balance = await this.rpcClient.getBalance({
+			address: subAccount.account.address
+		})
+
+		await this.transferNative({
+			from: subAccount.account,
+			to: newSubAccount.account.address,
+			amount: bigint_percent(
+				balance - transferGas * gasPrice - transferTokenGas * gasPrice,
+				90
+			)
+		})
+
+		return newSubAccount
 	}
 
 	private async approve(subAccount: SubAccount) {
@@ -184,26 +205,34 @@ export class Program {
 		await this.rpcClient.waitForTransactionReceipt({ hash })
 
 		console.log(
-			`${subAccount.account.address} has swapped with ${formatEther(amount)} ${src} to ${formatEther(BigInt(dstAmount))} ${dst}`
+			`${subAccount.account.address} has swapped with`,
+			Number(formatEther(amount)),
+			`${src} to `,
+			Number(formatEther(BigInt(dstAmount))),
+			dst
 		)
 	}
 
 	private async initTokensAndFee(subAccounts: SubAccount[]) {
-		for (const subAccount of subAccounts) {
-			await this.transferNative({
-				from: this.mainAccount(),
-				to: subAccount.account.address,
-				amount: parseEther(this.config.initFee.toString())
-			})
+		try {
+			for (const subAccount of subAccounts) {
+				await this.transferNative({
+					from: this.mainAccount(),
+					to: subAccount.account.address,
+					amount: parseEther(this.config.initFee.toString())
+				})
 
-			await this.transferToken({
-				from: this.mainAccount(),
-				amount: parseEther(this.config.initToken.toString()),
-				to: subAccount.account.address
-			})
+				await this.transferToken({
+					from: this.mainAccount(),
+					amount: parseEther(this.config.initToken.toString()),
+					to: subAccount.account.address
+				})
+			}
+
+			console.log("initialized tokens and fee")
+		} catch (error: any) {
+			console.error(`InitTokensAndFee error: ${error?.message}`)
 		}
-
-		console.log("initialized tokens and fee")
 	}
 
 	private async transferNative({ amount, from, to }: TransferParams) {
@@ -218,7 +247,8 @@ export class Program {
 		await this.rpcClient.waitForTransactionReceipt({ hash })
 
 		console.log(
-			`transfered native from ${from.address} to ${to} ${formatEther(amount)}`
+			`transfered native from ${from.address} to ${to}`,
+			Number(formatEther(amount))
 		)
 	}
 
@@ -235,7 +265,8 @@ export class Program {
 		await this.rpcClient.waitForTransactionReceipt({ hash })
 
 		console.log(
-			`transfered tokens from ${from.address} to ${to} ${formatEther(amount)}`
+			`transfered tokens from ${from.address} to ${to}`,
+			Number(formatEther(amount))
 		)
 	}
 
@@ -280,12 +311,15 @@ export class Program {
 		const tokenBalanceInUsd =
 			Number(formatEther(tokenBalance)) * tokenPriceInUSD
 
-		console.log("before swap $: ", { balanceInUsd, tokenBalanceInUsd })
+		console.log(`before swap $ ${subAccount.account.address}:`, {
+			balanceInUsd,
+			tokenBalanceInUsd
+		})
 
 		const target = (balanceInUsd + tokenBalanceInUsd) / 2
 
 		if (balanceInUsd > tokenBalanceInUsd) {
-			const amount = balanceInUsd - target + percent(balanceInUsd, 20)
+			const amount = balanceInUsd - target + percent(balanceInUsd, 10)
 
 			return {
 				amount: parseEther((amount / nativePriceInUSD).toString()),
@@ -294,7 +328,7 @@ export class Program {
 			}
 		}
 
-		const amount = tokenBalanceInUsd - target + percent(tokenBalanceInUsd, 20)
+		const amount = tokenBalanceInUsd - target + percent(tokenBalanceInUsd, 10)
 
 		return {
 			amount: parseEther((amount / tokenPriceInUSD).toString()),
@@ -332,49 +366,71 @@ export class Program {
 				account.address
 			)
 
-			console.log(`${account.address} balance >> ${formatEther(balance)}`)
+			console.log(`${account.address} balance >>`, Number(formatEther(balance)))
+
 			console.log(
-				`${account.address} token_balance >> ${formatEther(tokenBalance)}`
+				`${account.address} token_balance >>`,
+				Number(formatEther(tokenBalance))
 			)
 
 			const gasPrice = await this.rpcClient.getGasPrice()
 
 			if (tokenBalance > BigInt(0)) {
-				await this.rpcClient.estimateContractGas({
-					address: this.config.tokenAddress,
-					abi: ERC20,
-					account: wallet,
-					functionName: "transfer",
-					args: [mainAddress, tokenBalance]
-				})
+				try {
+					await this.rpcClient.estimateContractGas({
+						address: this.config.tokenAddress,
+						abi: ERC20,
+						account: wallet,
+						functionName: "transfer",
+						args: [mainAddress, tokenBalance]
+					})
 
-				await this.transferToken({
-					from: wallet,
-					to: mainAddress,
-					amount: tokenBalance
-				})
+					await this.transferToken({
+						from: wallet,
+						to: mainAddress,
+						amount: tokenBalance
+					})
 
-				console.log("done with draw tokens")
+					console.log("done with draw tokens")
+				} catch (error: any) {
+					if (isInsufficientError(error)) {
+						console.error("insufficient error")
+					} else {
+						console.error(error?.message)
+					}
+				}
 			}
 
 			if (balance > BigInt(0)) {
-				balance = await this.rpcClient.getBalance({ address: wallet.address })
+				try {
+					balance = await this.rpcClient.getBalance({ address: wallet.address })
 
-				const transferGas = await this.rpcClient.estimateGas({
-					to: mainAddress,
-					account: wallet
-				})
-
-				await this.transferNative({
-					from: wallet,
-					to: mainAddress,
-					amount:
+					const transferGas = await this.rpcClient.estimateGas({
+						to: mainAddress,
+						account: wallet
+					})
+					const amount =
 						balance -
 						transferGas * gasPrice -
 						bigint_percent(transferGas * gasPrice, 95)
-				})
 
-				console.log("done with draw native")
+					if (amount > 0) {
+						await this.transferNative({
+							from: wallet,
+							to: mainAddress,
+							amount
+						})
+						console.log("done with draw native")
+					} else {
+						console.log("skip transfering native because of too small balance")
+					}
+				} catch (error: any) {
+					if (isInsufficientError(error)) {
+						console.error("insufficient error")
+					} else {
+						console.error(error?.message)
+					}
+				}
 			}
 		}
 	}
