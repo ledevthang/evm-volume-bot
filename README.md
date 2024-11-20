@@ -13,7 +13,7 @@
    + PRIVATE_KEY ( private key of main wallet address )
    + API_1INCH_KEY ( 1inch Api key )
    + RPC_1 ( RPC url )
-   + RPC_2 ( anothor RPC url )
+   + RPC_2 ( another RPC url )
    
    # Config
    + CHAIN ( avax or ether )
@@ -23,8 +23,9 @@
    + SUB_ACCOUNT_CONCURRENCY ( Number of wallets transacting simultaneously )
    + SUB_ACCOUNT_TRADING_MAX ( Limit the number of transactions of a sub-wallet )
    
-Sample Configuration: 
-	# Main account
+Configuration example: 
+
+ 	# Main account
 	PRIVATE_KEY=
 
 	# 1Inch 
@@ -46,7 +47,7 @@ Sample Configuration:
 - In the bot folder run this script:
  $ node --env-file=.env dist/main.js
  
-# Informations file
+# Information files
 - wallets.txt ( The file where the bot writes the generated wallets )
 - executing-wallets.txt ( The file where the bot writes the wallets in trading process )
 
