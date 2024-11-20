@@ -2,6 +2,7 @@ import {
 	type Address,
 	createPublicClient,
 	createWalletClient,
+	fallback,
 	type Hex,
 	http
 } from "viem"
@@ -11,9 +12,9 @@ import fs from "node:fs"
 import { Program } from "./program.js"
 
 async function main() {
-	const { config, pk, rpc } = parseConfig()
+	const { config, pk, rpc1, rpc2 } = parseConfig()
 
-	const transport = http(rpc)
+	const transport = fallback([http(rpc1), http(rpc2)])
 
 	const rpcClient = createPublicClient({
 		transport

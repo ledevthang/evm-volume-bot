@@ -56,6 +56,11 @@ export class Program {
 		await this.initTokensAndFee(subAccounts)
 
 		for (;;) {
+			if (subAccounts.length === 0) {
+				console.log("finish")
+				return
+			}
+
 			const executingAccounts = subAccounts.map(({ account, pk }) => ({
 				address: account.address,
 				privateKey: pk
@@ -66,9 +71,19 @@ export class Program {
 				`${JSON.stringify(executingAccounts, null, 1)}`
 			)
 
-			subAccounts = await Promise.all(
-				subAccounts.map(subAccount => this.trade(subAccount))
+			const rs = await Promise.all(
+				subAccounts.map(async subAccount => {
+					try {
+						const newAcc = await this.trade(subAccount)
+						return newAcc
+					} catch (error) {
+						console.error(error)
+						return
+					}
+				})
 			)
+
+			subAccounts = rs.filter(account => !!account)
 
 			console.log(
 				`switch to new accounts ${subAccounts.map(account => account.account.address)}`
@@ -280,12 +295,15 @@ export class Program {
 		const tokenBalanceInUsd =
 			Number(formatEther(tokenBalance)) * tokenPriceInUSD
 
-		console.log("before swap $: ", { balanceInUsd, tokenBalanceInUsd })
+		console.log(`${subAccount.account.address} before swap $: `, {
+			balanceInUsd,
+			tokenBalanceInUsd
+		})
 
 		const target = (balanceInUsd + tokenBalanceInUsd) / 2
 
 		if (balanceInUsd > tokenBalanceInUsd) {
-			const amount = balanceInUsd - target + percent(balanceInUsd, 20)
+			const amount = balanceInUsd - target + percent(balanceInUsd, 15)
 
 			return {
 				amount: parseEther((amount / nativePriceInUSD).toString()),
@@ -294,7 +312,7 @@ export class Program {
 			}
 		}
 
-		const amount = tokenBalanceInUsd - target + percent(tokenBalanceInUsd, 20)
+		const amount = tokenBalanceInUsd - target + percent(tokenBalanceInUsd, 15)
 
 		return {
 			amount: parseEther((amount / tokenPriceInUSD).toString()),
@@ -333,6 +351,7 @@ export class Program {
 			)
 
 			console.log(`${account.address} balance >> ${formatEther(balance)}`)
+
 			console.log(
 				`${account.address} token_balance >> ${formatEther(tokenBalance)}`
 			)
@@ -340,41 +359,49 @@ export class Program {
 			const gasPrice = await this.rpcClient.getGasPrice()
 
 			if (tokenBalance > BigInt(0)) {
-				await this.rpcClient.estimateContractGas({
-					address: this.config.tokenAddress,
-					abi: ERC20,
-					account: wallet,
-					functionName: "transfer",
-					args: [mainAddress, tokenBalance]
-				})
+				try {
+					await this.rpcClient.estimateContractGas({
+						address: this.config.tokenAddress,
+						abi: ERC20,
+						account: wallet,
+						functionName: "transfer",
+						args: [mainAddress, tokenBalance]
+					})
 
-				await this.transferToken({
-					from: wallet,
-					to: mainAddress,
-					amount: tokenBalance
-				})
+					await this.transferToken({
+						from: wallet,
+						to: mainAddress,
+						amount: tokenBalance
+					})
 
-				console.log("done with draw tokens")
+					console.log("done with draw tokens")
+				} catch (error: any) {
+					console.log(error?.message)
+				}
 			}
 
 			if (balance > BigInt(0)) {
-				balance = await this.rpcClient.getBalance({ address: wallet.address })
+				try {
+					balance = await this.rpcClient.getBalance({ address: wallet.address })
 
-				const transferGas = await this.rpcClient.estimateGas({
-					to: mainAddress,
-					account: wallet
-				})
+					const transferGas = await this.rpcClient.estimateGas({
+						to: mainAddress,
+						account: wallet
+					})
 
-				await this.transferNative({
-					from: wallet,
-					to: mainAddress,
-					amount:
-						balance -
-						transferGas * gasPrice -
-						bigint_percent(transferGas * gasPrice, 95)
-				})
+					await this.transferNative({
+						from: wallet,
+						to: mainAddress,
+						amount:
+							balance -
+							transferGas * gasPrice -
+							bigint_percent(transferGas * gasPrice, 95)
+					})
 
-				console.log("done with draw native")
+					console.log("done with draw native")
+				} catch (error: any) {
+					console.log(error?.message)
+				}
 			}
 		}
 	}

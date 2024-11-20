@@ -2,6 +2,7 @@ import axios, { isAxiosError } from "axios"
 import type { Address, Hex } from "viem"
 import { sleep } from "./sleep.js"
 import { DateTime } from "luxon"
+import { retry } from "ts-retry-promise"
 
 type GenerateApproveParams = {
 	chainId: number
@@ -51,17 +52,17 @@ export class OneInch {
 	private restTimeInMiliSeconds = 3000
 
 	generateApprove(params: GenerateApproveParams) {
-		return this.handle429(() => this.unsafeGenerateApprove(params))
+		return this.handle429AndRetry(() => this.unsafeGenerateApprove(params))
 	}
 
 	generateSwapCallData(chainId: number, params: SwapParams) {
-		return this.handle429(() =>
+		return this.handle429AndRetry(() =>
 			this.unsafeGenerateSwapCallData(chainId, params)
 		)
 	}
 
 	spotPrice<T extends Address>(chainId: number, address: T[]) {
-		return this.handle429(() => this.unsafeSpotPrice(chainId, address))
+		return this.handle429AndRetry(() => this.unsafeSpotPrice(chainId, address))
 	}
 
 	private async unsafeGenerateApprove({
@@ -106,7 +107,7 @@ export class OneInch {
 		return response.data
 	}
 
-	private async handle429<T>(thunk: () => Promise<T>): Promise<T> {
+	private async handle429AndRetry<T>(thunk: () => Promise<T>): Promise<T> {
 		while (
 			DateTime.now().toSeconds() - this.lastimeCalling.toSeconds() >
 			this.restTimeInMiliSeconds
@@ -114,23 +115,24 @@ export class OneInch {
 			await sleep(1000)
 		}
 
-		const result = await thunk().catch(error => {
-			if (isAxiosError(error)) {
-				throw new Error(
-					JSON.stringify(
-						{
-							code: error.code,
-							message: error.message,
-							response: error.response?.data
-						},
-						null,
-						2
+		const result = await retry(thunk, { retries: 6, delay: 1500 }).catch(
+			error => {
+				if (isAxiosError(error))
+					throw new Error(
+						JSON.stringify(
+							{
+								code: error.code,
+								message: error.message,
+								response: error.response?.data
+							},
+							null,
+							2
+						)
 					)
-				)
-			}
 
-			throw error
-		})
+				throw error
+			}
+		)
 
 		await sleep(this.restTimeInMiliSeconds)
 
