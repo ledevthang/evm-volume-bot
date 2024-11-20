@@ -2,6 +2,7 @@ import {
 	type Address,
 	createPublicClient,
 	createWalletClient,
+	fallback,
 	type Hex,
 	http
 } from "viem"
@@ -9,11 +10,12 @@ import { parseConfig } from "./parse-config.js"
 import { privateKeyToAccount } from "viem/accounts"
 import fs from "node:fs"
 import { Program } from "./program.js"
+import { Effect, Either } from "effect"
 
 async function main() {
-	const { config, pk, rpc } = parseConfig()
+	const { config, pk, rpc1, rpc2 } = parseConfig()
 
-	const transport = http(rpc)
+	const transport = fallback([http(rpc1), http(rpc2)])
 
 	const rpcClient = createPublicClient({
 		transport
@@ -35,7 +37,9 @@ async function main() {
 		.filter(s => !!s)
 		.map(s => JSON.parse(s))
 
-	await program.withdraw(wallets)
+	console.log("wallets: ", wallets)
+
+	await program.withdraw(wallets).pipe(Effect.runPromiseExit)
 }
 
 main()

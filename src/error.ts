@@ -1,51 +1,65 @@
 import type { AxiosError } from "axios"
 import type { Effect } from "effect"
+import type { RpcRequestError as ViemRpcRequestError } from "viem"
 
 export type Result<A, E> = Effect.Effect<A, E, never>
 
-export function isInsufficient(error: unknown): error is InsufficientError {
-	return true
+type BotError = {
+	readonly _tag: string
+	display(): Record<string, unknown>
 }
 
-export class OneInchError {
+export class OneInchError implements BotError {
 	public readonly _tag = "OneInchError"
 	constructor(private error: AxiosError) {}
-}
 
-export class RpcReadError {
+	public display() {
+		return {
+			message: this.error.message,
+			reponse: {
+				code: this.error.code,
+				data: this.error.response?.data,
+				status: this.error.response?.status
+			}
+		}
+	}
+}
+export class RpcRequestError implements BotError {
 	public readonly _tag = "RpcReadError"
 	constructor(private error: unknown) {}
+
+	public display() {
+		const error = this.error as ViemRpcRequestError
+		return {
+			code: error.code,
+			name: error.name,
+			details: error.details,
+			shortMessage: error.shortMessage
+		}
+	}
 }
 
-export class RpcSendError {
-	public readonly _tag = "RpcSendError"
-	constructor(private error: unknown) {}
-}
-
-export class RpcWriteContractError {
-	public readonly _tag = "RpcWriteContractError"
-	constructor(private error: unknown) {}
-}
-
-export class InsufficientError {
-	public readonly _tag = "RpcSendError"
-
-	constructor(private message: string) {}
-}
-
-export class WaitTxReceiptError {
-	public readonly _tag = "WaitTxReceiptError"
-
-	constructor(private error: unknown) {}
-}
-
-export class FsError {
+export class FsError implements BotError {
 	public readonly _tag = "FsError"
 	constructor(private error: unknown) {}
+
+	public display() {
+		return {
+			message:
+				this.error instanceof Error ? this.error.message : String(this.error)
+		}
+	}
 }
 
-export class UnknownError {
+export class UnknownError implements BotError {
 	public readonly _tag = "UnknownError"
 
 	constructor(private error: unknown) {}
+
+	public display() {
+		return {
+			message:
+				this.error instanceof Error ? this.error.message : String(this.error)
+		}
+	}
 }

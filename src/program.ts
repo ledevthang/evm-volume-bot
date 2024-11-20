@@ -13,18 +13,13 @@ import { ERC20 } from "./ecc20.abi.js"
 import { sleep } from "./sleep.js"
 import { OneInch } from "./services.js"
 import { DateTime } from "luxon"
-import { Chunk, Effect, pipe } from "effect"
+import { Boolean as Bool, Chunk, Effect, pipe } from "effect"
 import {
 	FsError,
-	InsufficientError,
-	isInsufficient,
-	OneInchError,
-	Result,
-	RpcReadError,
-	RpcSendError,
-	RpcWriteContractError,
-	UnknownError,
-	WaitTxReceiptError
+	type OneInchError,
+	type Result,
+	RpcRequestError,
+	type UnknownError
 } from "./error.js"
 
 const NATIVE = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" as const
@@ -62,11 +57,11 @@ export class Program {
 	) {}
 
 	public async run() {
-		let subAccounts = await this.generateAccount(
-			this.config.subAccountConcurrency
+		let subAccounts = await pipe(
+			this.generateAccount(this.config.subAccountConcurrency),
+			Effect.tap(subAccounts => this.initTokensAndFee(subAccounts)),
+			Effect.runPromise
 		)
-
-		await this.initTokensAndFee(subAccounts)
 
 		for (;;) {
 			const executingAccounts = subAccounts.map(({ account, pk }) => ({
@@ -79,8 +74,15 @@ export class Program {
 				`${JSON.stringify(executingAccounts, null, 1)}`
 			)
 
-			subAccounts = await Promise.all(
-				subAccounts.map(subAccount => this.trade(subAccount))
+			subAccounts = await pipe(
+				subAccounts,
+				Chunk.fromIterable,
+				Chunk.map(subAccount => this.trade(subAccount)),
+				tasks =>
+					Effect.all(tasks, {
+						concurrency: this.config.subAccountConcurrency
+					}),
+				Effect.runPromise
 			)
 
 			console.log(
@@ -91,72 +93,107 @@ export class Program {
 		}
 	}
 
-	private async trade(subAccount: SubAccount): Promise<SubAccount> {
-		if (subAccount.tradingTimes === this.config.subAccountTradingMax) {
-			const [newSubAccount] = await this.generateAccount(1)
+	private createNewSubAccountAndTransferAssets(subAccount: SubAccount) {
+		return pipe(
+			this.generateAccount(1),
+			Effect.map(accounts => accounts[0]),
+			Effect.bindTo("newSubAccount"),
+			Effect.bind("assets", ({ newSubAccount }) =>
+				this.getBalanceAndTokenBalance(newSubAccount.account.address)
+			),
+			Effect.bind("transferGas", ({ newSubAccount }) =>
+				Effect.tryPromise({
+					try: () =>
+						this.rpcClient.estimateGas({
+							to: newSubAccount.account.address,
+							account: subAccount.account
+						}),
+					catch: error => new RpcRequestError(error)
+				})
+			),
+			Effect.bind("transferTokenGas", ({ newSubAccount, assets }) =>
+				Effect.tryPromise({
+					try: () =>
+						this.rpcClient.estimateContractGas({
+							address: this.config.tokenAddress,
+							abi: ERC20,
+							account: subAccount.account,
+							functionName: "transfer",
+							args: [newSubAccount.account.address, assets.tokenBalance]
+						}),
+					catch: error => new RpcRequestError(error)
+				})
+			),
+			Effect.bind("gasPrice", () =>
+				Effect.tryPromise({
+					try: () => this.rpcClient.getGasPrice(),
+					catch: error => new RpcRequestError(error)
+				})
+			),
+			Effect.tap(({ assets, newSubAccount }) =>
+				this.transferToken({
+					from: subAccount.account,
+					to: newSubAccount.account.address,
+					amount: bigint_percent(assets.tokenBalance, 100)
+				})
+			),
+			Effect.bind("newBalance", () =>
+				Effect.tryPromise({
+					try: () =>
+						this.rpcClient.getBalance({
+							address: subAccount.account.address
+						}),
+					catch: error => new RpcRequestError(error)
+				})
+			),
+			Effect.tap(
+				({
+					newBalance,
+					newSubAccount,
+					transferGas,
+					transferTokenGas,
+					gasPrice
+				}) =>
+					this.transferNative({
+						from: subAccount.account,
+						to: newSubAccount.account.address,
+						amount: bigint_percent(
+							newBalance - transferGas * gasPrice - transferTokenGas * gasPrice,
+							90
+						)
+					})
+			),
+			Effect.map(({ newSubAccount }) => newSubAccount)
+		)
+	}
 
-			let [balance, tokenBalance] = await this.getBalanceAndTokenBalance(
-				subAccount.account.address
-			)
-
-			const transferGas = await this.rpcClient.estimateGas({
-				to: newSubAccount.account.address,
-				account: subAccount.account
+	private trade(
+		subAccount: SubAccount
+	): Result<
+		SubAccount,
+		FsError | RpcRequestError | OneInchError | UnknownError
+	> {
+		return pipe(
+			subAccount.tradingTimes === this.config.subAccountTradingMax,
+			Bool.match({
+				onTrue: () => this.createNewSubAccountAndTransferAssets(subAccount),
+				onFalse: () =>
+					pipe(
+						Effect.if(subAccount.tradingTimes === 0, {
+							onTrue: () => this.approve(subAccount),
+							onFalse: () => Effect.void
+						}),
+						Effect.flatMap(() => this.swap(subAccount)),
+						Effect.tap(() => subAccount.tradingTimes++),
+						Effect.flatMap(() => this.trade(subAccount))
+					)
 			})
-
-			const transferTokenGas = await this.rpcClient.estimateContractGas({
-				address: this.config.tokenAddress,
-				abi: ERC20,
-				account: subAccount.account,
-				functionName: "transfer",
-				args: [newSubAccount.account.address, tokenBalance]
-			})
-
-			const gasPrice = await this.rpcClient.getGasPrice()
-
-			await this.transferToken({
-				from: subAccount.account,
-				to: newSubAccount.account.address,
-				amount: bigint_percent(tokenBalance, 100)
-			})
-
-			balance = await this.rpcClient.getBalance({
-				address: subAccount.account.address
-			})
-
-			await this.transferNative({
-				from: subAccount.account,
-				to: newSubAccount.account.address,
-				amount: bigint_percent(
-					balance - transferGas * gasPrice - transferTokenGas * gasPrice,
-					90
-				)
-			})
-
-			return newSubAccount
-		}
-
-		if (subAccount.tradingTimes === 0) {
-			await this.approve(subAccount)
-		}
-
-		await this.swap(subAccount)
-
-		subAccount.tradingTimes++
-
-		return this.trade(subAccount)
+		)
 	}
 
 	private approve(
 		subAccount: SubAccount
-	): Result<
-		void,
-		| OneInchError
-		| RpcSendError
-		| InsufficientError
-		| WaitTxReceiptError
-		| UnknownError
-	> {
+	): Result<void, RpcRequestError | OneInchError | UnknownError> {
 		return pipe(
 			this.oneInchClient.generateApprove({
 				chainId: this.config.chain.id,
@@ -173,20 +210,15 @@ export class Program {
 							gasPrice: BigInt(approveTx.gasPrice),
 							value: BigInt(approveTx.value)
 						}),
-					catch: error => new RpcSendError(error)
+					catch: error => new RpcRequestError(error)
 				})
 			),
 			Effect.flatMap(hash =>
 				Effect.tryPromise({
 					try: () => this.rpcClient.waitForTransactionReceipt({ hash }),
-					catch: error => new WaitTxReceiptError(error)
+					catch: error => new RpcRequestError(error)
 				})
 			),
-			Effect.mapError(error => {
-				if (isInsufficient(error))
-					return new InsufficientError("InsufficientError")
-				return error
-			}),
 			Effect.tap(() =>
 				Effect.log(
 					`${subAccount.account.address} has approved token ${this.config.tokenAddress} on 1inch`
@@ -199,13 +231,7 @@ export class Program {
 		subAccount: SubAccount
 	): Result<
 		void,
-		| RpcSendError
-		| OneInchError
-		| RpcReadError
-		| InsufficientError
-		| WaitTxReceiptError
-		| InsufficientError
-		| UnknownError
+		RpcRequestError | OneInchError | RpcRequestError | UnknownError
 	> {
 		return pipe(
 			this.calculateBeforeSwap(subAccount),
@@ -231,20 +257,15 @@ export class Program {
 							gasPrice: BigInt(tx.gasPrice),
 							value: BigInt(tx.value)
 						}),
-					catch: error => new RpcSendError(error)
+					catch: error => new RpcRequestError(error)
 				})
 			),
 			Effect.tap(({ hash }) =>
 				Effect.tryPromise({
 					try: () => this.rpcClient.waitForTransactionReceipt({ hash }),
-					catch: error => new WaitTxReceiptError(error)
+					catch: error => new RpcRequestError(error)
 				})
 			),
-			Effect.mapError(error => {
-				if (isInsufficient(error))
-					return new InsufficientError("InsufficientError")
-				return error
-			}),
 			Effect.tap(({ src, dst, amount, callDataResponse: { dstAmount } }) =>
 				Effect.log(
 					`${subAccount.account.address} has swapped with ${formatEther(amount)} ${src} to ${formatEther(BigInt(dstAmount))} ${dst}`
@@ -255,13 +276,7 @@ export class Program {
 
 	private initTokensAndFee(
 		subAccounts: SubAccount[]
-	): Result<
-		void,
-		| RpcWriteContractError
-		| InsufficientError
-		| WaitTxReceiptError
-		| RpcSendError
-	> {
+	): Result<void, RpcRequestError> {
 		return pipe(
 			subAccounts,
 			Chunk.fromIterable,
@@ -290,10 +305,7 @@ export class Program {
 		amount,
 		from,
 		to
-	}: TransferParams): Result<
-		void,
-		RpcSendError | InsufficientError | WaitTxReceiptError
-	> {
+	}: TransferParams): Result<void, RpcRequestError> {
 		return pipe(
 			Effect.tryPromise({
 				try: () =>
@@ -304,17 +316,12 @@ export class Program {
 						chain: this.config.chain,
 						account: from
 					}),
-				catch: error => new RpcSendError(error)
-			}),
-			Effect.mapError(error => {
-				if (isInsufficient(error))
-					return new InsufficientError("InsufficientError")
-				return error
+				catch: error => new RpcRequestError(error)
 			}),
 			Effect.flatMap(hash =>
 				Effect.tryPromise({
 					try: () => this.rpcClient.waitForTransactionReceipt({ hash }),
-					catch: error => new WaitTxReceiptError(error)
+					catch: error => new RpcRequestError(error)
 				})
 			),
 			Effect.tap(() =>
@@ -329,10 +336,7 @@ export class Program {
 		amount,
 		from,
 		to
-	}: TransferParams): Result<
-		void,
-		RpcWriteContractError | InsufficientError | WaitTxReceiptError
-	> {
+	}: TransferParams): Result<void, RpcRequestError> {
 		return pipe(
 			Effect.tryPromise({
 				try: () =>
@@ -344,17 +348,12 @@ export class Program {
 						chain: this.config.chain,
 						args: [to, amount]
 					}),
-				catch: error => new RpcWriteContractError(error)
-			}),
-			Effect.mapError(error => {
-				if (isInsufficient(error))
-					return new InsufficientError("InsufficientError")
-				return error
+				catch: error => new RpcRequestError(error)
 			}),
 			Effect.flatMap(hash =>
 				Effect.tryPromise({
 					try: () => this.rpcClient.waitForTransactionReceipt({ hash }),
-					catch: error => new WaitTxReceiptError(error)
+					catch: error => new RpcRequestError(error)
 				})
 			),
 			Effect.tap(() =>
@@ -378,7 +377,6 @@ export class Program {
 							privateKey: randomPk,
 							createdAt: DateTime.now().toISO()
 						})
-
 						await fs.appendFile("wallets.txt", `\n${dataAppend}`)
 
 						return {
@@ -400,7 +398,7 @@ export class Program {
 			dst: Address
 			amount: bigint
 		},
-		OneInchError | RpcReadError | UnknownError
+		OneInchError | RpcRequestError | UnknownError
 	> {
 		return pipe(
 			this.getBalanceAndTokenBalance(subAccount.account.address),
@@ -464,14 +462,14 @@ export class Program {
 			balance: bigint
 			tokenBalance: bigint
 		},
-		RpcReadError
+		RpcRequestError
 	> {
 		return pipe(
 			Effect.Do,
 			Effect.bind("balance", () =>
 				Effect.tryPromise({
 					try: () => this.rpcClient.getBalance({ address }),
-					catch: error => new RpcReadError(error)
+					catch: error => new RpcRequestError(error)
 				})
 			),
 			Effect.bind("tokenBalance", () =>
@@ -483,7 +481,7 @@ export class Program {
 							args: [address],
 							address: this.config.tokenAddress
 						}),
-					catch: error => new RpcReadError(error)
+					catch: error => new RpcRequestError(error)
 				})
 			)
 		)
@@ -493,61 +491,85 @@ export class Program {
 		return this.mainWalletClient.account!
 	}
 
-	public async withdraw(accounts: { address: Address; privateKey: Hex }[]) {
+	public withdraw(accounts: { address: Address; privateKey: Hex }[]) {
 		const mainAddress = this.mainAccount().address
-
-		for (const account of accounts) {
-			const wallet = privateKeyToAccount(account.privateKey)
-
-			let [balance, tokenBalance] = await this.getBalanceAndTokenBalance(
-				account.address
-			)
-
-			console.log(`${account.address} balance >> ${formatEther(balance)}`)
-			console.log(
-				`${account.address} token_balance >> ${formatEther(tokenBalance)}`
-			)
-
-			const gasPrice = await this.rpcClient.getGasPrice()
-
-			if (tokenBalance > BigInt(0)) {
-				await this.rpcClient.estimateContractGas({
-					address: this.config.tokenAddress,
-					abi: ERC20,
-					account: wallet,
-					functionName: "transfer",
-					args: [mainAddress, tokenBalance]
-				})
-
-				await this.transferToken({
-					from: wallet,
-					to: mainAddress,
-					amount: tokenBalance
-				})
-
-				console.log("done with draw tokens")
-			}
-
-			if (balance > BigInt(0)) {
-				balance = await this.rpcClient.getBalance({ address: wallet.address })
-
-				const transferGas = await this.rpcClient.estimateGas({
-					to: mainAddress,
-					account: wallet
-				})
-
-				await this.transferNative({
-					from: wallet,
-					to: mainAddress,
-					amount:
-						balance -
-						transferGas * gasPrice -
-						bigint_percent(transferGas * gasPrice, 95)
-				})
-
-				console.log("done with draw native")
-			}
-		}
+		return pipe(
+			accounts,
+			Chunk.fromIterable,
+			Chunk.map(account =>
+				pipe(
+					Effect.Do,
+					Effect.let("wallet", () => privateKeyToAccount(account.privateKey)),
+					Effect.bind("assets", () =>
+						this.getBalanceAndTokenBalance(account.address)
+					),
+					Effect.tap(({ assets }) =>
+						Effect.log(
+							`${account.address} balance >> ${formatEther(assets.balance)}`
+						)
+					),
+					Effect.tap(({ assets }) =>
+						Effect.log(
+							`${account.address} token_balance >> ${formatEther(assets.tokenBalance)}`
+						)
+					),
+					Effect.tap(({ assets, wallet }) =>
+						Effect.if(assets.tokenBalance > BigInt(0), {
+							onFalse: () => Effect.void,
+							onTrue: () =>
+								this.transferToken({
+									from: wallet,
+									to: mainAddress,
+									amount: assets.tokenBalance
+								}).pipe(Effect.tap(() => Effect.log("done with draw tokens")))
+						})
+					),
+					Effect.tap(({ assets, wallet }) =>
+						Effect.if(assets.balance > BigInt(0), {
+							onFalse: () => Effect.void,
+							onTrue: () =>
+								pipe(
+									Effect.tryPromise({
+										try: () =>
+											this.rpcClient.getBalance({ address: wallet.address }),
+										catch: error => new RpcRequestError(error)
+									}),
+									Effect.bindTo("balance"),
+									Effect.bind("transferGas", () =>
+										Effect.tryPromise({
+											try: () =>
+												this.rpcClient.estimateGas({
+													to: mainAddress,
+													account: wallet
+												}),
+											catch: error => new RpcRequestError(error)
+										})
+									),
+									Effect.bind("gasPrice", () =>
+										Effect.tryPromise({
+											try: () => this.rpcClient.getGasPrice(),
+											catch: error => new RpcRequestError(error)
+										})
+									),
+									Effect.flatMap(({ balance, transferGas, gasPrice }) =>
+										this.transferNative({
+											from: wallet,
+											to: mainAddress,
+											amount:
+												balance -
+												transferGas * gasPrice -
+												bigint_percent(transferGas * gasPrice, 95)
+										})
+									),
+									Effect.tap(() => Effect.log("done with draw native"))
+								)
+						})
+					)
+				)
+			),
+			Effect.all,
+			Effect.asVoid
+		)
 	}
 }
 
