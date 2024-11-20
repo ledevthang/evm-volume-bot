@@ -23,8 +23,9 @@
    + SUB_ACCOUNT_CONCURRENCY ( Number of wallets transacting simultaneously )
    + SUB_ACCOUNT_TRADING_MAX ( Limit the number of transactions of a sub-wallet )
    
-Sample Configuration: 
-	# Main account
+Configuration example: 
+
+ 	# Main account
 	PRIVATE_KEY=
 
 	# 1Inch 
