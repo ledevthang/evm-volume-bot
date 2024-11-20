@@ -102,8 +102,6 @@ export class OneInch {
 			`https://api.1inch.dev/price/v1.1/${chainId}/${address}?currency=USD`
 		)
 
-		await sleep(2000)
-
 		return response.data
 	}
 
