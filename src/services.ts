@@ -113,6 +113,8 @@ export class OneInch {
 			await sleep(1000)
 		}
 
+		this.lastimeCalling = DateTime.now()
+
 		const result = await retry(thunk, {
 			retries: 6,
 			delay: 1500,
