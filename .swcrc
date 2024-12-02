@@ -13,7 +13,7 @@
 		},
 		"target": "es2020"
 	},
-	"minify": false,
+	"minify": true,
 	"module": {
 		"type": "es6"
 	}
