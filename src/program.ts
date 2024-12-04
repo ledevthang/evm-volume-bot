@@ -67,7 +67,7 @@ export class Program {
 			}))
 
 			await fs.writeFile(
-				"executing-wallets.txt",
+				"evm-executing-wallets.txt",
 				`${JSON.stringify(executingAccounts, null, 1)}`
 			)
 
@@ -282,7 +282,7 @@ export class Program {
 					createdAt: DateTime.now().toISO()
 				})
 
-				await fs.appendFile("wallets.txt", `\n${data}`)
+				await fs.appendFile("evm-wallets.txt", `\n${data}`)
 
 				return {
 					account,

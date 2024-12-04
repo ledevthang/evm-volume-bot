@@ -31,7 +31,7 @@ async function main() {
 		address: Address
 		privateKey: Hex
 	}[] = fs
-		.readFileSync("wallets.txt", "utf-8")
+		.readFileSync("evm-wallets.txt", "utf-8")
 		.split("\n")
 		.filter(s => !!s)
 		.map(s => JSON.parse(s))

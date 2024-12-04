@@ -3,5 +3,4 @@
 /target
 
 /.env
-/executing-wallets.txt
-/wallets.txt
+**/*wallets.txt
