@@ -13,6 +13,7 @@ import { ERC20 } from "./ecc20.abi.js"
 import { isInsufficientError, sleep, tryToInsufficient } from "./utils.js"
 import { OneInch } from "./services.js"
 import { DateTime } from "luxon"
+import { Logger } from "./logger.js"
 
 const NATIVE = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" as const
 
@@ -41,6 +42,7 @@ type TransferParams = {
 
 export class Program {
 	private oneInchClient = new OneInch()
+	private logger = new Logger()
 
 	constructor(
 		private mainWalletClient: WalletClient,
