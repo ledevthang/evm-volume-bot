@@ -1,5 +1,5 @@
 import { retry } from "ts-retry-promise"
-import { isAxiosError } from "node_modules/axios/index.cjs"
+import { isAxiosError } from "axios"
 import { Logger } from "./logger.js"
 
 export async function tryToInsufficient<T>(

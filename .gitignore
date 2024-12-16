@@ -3,5 +3,6 @@
 /target
 
 /.env
-**/*wallets.txt
+**/*wallets.*
 /config.json
+/memo.txt

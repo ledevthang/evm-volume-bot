@@ -89,7 +89,7 @@ export class Program {
 			else sellCount++
 
 			const restTime =
-				randomInt(this.config.wait_time_min, this.config.wait_time_max) * 1000
+				random(this.config.wait_time_min, this.config.wait_time_max) * 1000
 
 			await sleep(restTime)
 		}
