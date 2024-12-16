@@ -7,7 +7,7 @@ import { retry } from "ts-retry-promise"
 type GenerateApproveParams = {
 	chainId: number
 	tokenAddress: Address
-	amount?: bigint
+	amount?: bigint // If not specified, it will be allowed to spend an infinite amount of tokens.
 }
 
 type GenerateApproveResponse = {
