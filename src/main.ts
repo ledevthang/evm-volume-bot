@@ -1,8 +1,13 @@
 import { Program } from "./program.js"
 import { parseConfig } from "./parse-config.js"
 import { privateKeyToAccount } from "viem/accounts"
-import { createPublicClient, createWalletClient, fallback, http } from "viem"
-import { ERC20 } from "./ecc20.abi.js"
+import {
+	createPublicClient,
+	createWalletClient,
+	erc20Abi,
+	fallback,
+	http
+} from "viem"
 
 async function main() {
 	const config = parseConfig()
@@ -19,7 +24,7 @@ async function main() {
 	})
 
 	const symbol = await rpcClient.readContract({
-		abi: ERC20,
+		abi: erc20Abi,
 		functionName: "symbol",
 		address: config.token_address
 	})

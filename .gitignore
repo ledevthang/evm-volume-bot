@@ -4,3 +4,4 @@
 
 /.env
 **/*wallets.txt
+/config.json

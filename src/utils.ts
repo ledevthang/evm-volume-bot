@@ -1,5 +1,6 @@
 import { retry } from "ts-retry-promise"
-import { OneInchError } from "./services.js"
+import { isAxiosError } from "node_modules/axios/index.cjs"
+import { Logger } from "./logger.js"
 
 export async function tryToInsufficient<T>(
 	thunk: () => Promise<T>
@@ -9,29 +10,38 @@ export async function tryToInsufficient<T>(
 		retries: "INFINITELY",
 		delay: 3_000,
 		retryIf: error => {
-			console.error(
-				`RPC request error: ${JSON.stringify(
-					{
-						code: error?.code,
-						name: error?.name,
-						details: error?.details
-					},
-					null,
-					1
-				)}`
-			)
+			if (isAxiosError(error))
+				Logger.error(
+					`Http request error: ${JSON.stringify(
+						{
+							code: error.code,
+							message: error.message,
+							response: error.response?.data
+						},
+						null,
+						1
+					)}`
+				)
+			else {
+				Logger.error(
+					`RPC request error: ${JSON.stringify(
+						{
+							code: error?.code,
+							name: error?.name,
+							details: error?.details
+						},
+						null,
+						1
+					)}`
+				)
+			}
 
 			return !isInsufficientError(error)
 		}
 	})
 }
 
-export function isInsufficientError(error: any) {
-	if (error instanceof OneInchError) {
-		error.display()
-		return false
-	}
-
+function isInsufficientError(error: any) {
 	if (error?.details?.includes("gas required exceeds allowance")) return true
 
 	if (error?.details?.includes("insufficient funds")) return true

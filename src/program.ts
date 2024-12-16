@@ -1,8 +1,13 @@
 import fs from "node:fs/promises"
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts"
 import { formatEther, parseEther } from "viem/utils"
-import type { WalletClient, PublicClient, Address, Account } from "viem"
-import { ERC20 } from "./ecc20.abi.js"
+import {
+	type WalletClient,
+	type PublicClient,
+	type Address,
+	type Account,
+	erc20Abi
+} from "viem"
 import {
 	bigintPercent,
 	random,
@@ -12,9 +17,10 @@ import {
 } from "./utils.js"
 import { OneInch } from "./services.js"
 import { DateTime } from "luxon"
-import { Logger } from "./logger.js"
 import type { Config } from "./parse-config.js"
 import { Decimal } from "decimal.js"
+import { Logger } from "./logger.js"
+import { encryptWallet } from "./hashing.js"
 
 const NATIVE = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" as const
 
@@ -33,7 +39,6 @@ type TransferParams = {
 
 export class Program {
 	private oneInchClient = new OneInch()
-	private logger = new Logger()
 
 	constructor(
 		private wallet: WalletClient,
@@ -69,11 +74,9 @@ export class Program {
 			)
 				return this.createNewAccountAndTransfer(account)
 
-			const amount = parseEther(
-				new Decimal(
-					random(this.config.min_weth, this.config.max_weth)
-				).toFixed()
-			)
+			const randUiAmount = random(this.config.min_weth, this.config.max_weth)
+
+			const amount = parseEther(new Decimal(randUiAmount).toFixed())
 
 			await this.swap({
 				account,
@@ -93,6 +96,16 @@ export class Program {
 	}
 
 	private async approveSwap(account: Account) {
+		const allowance = await this.oneInchClient.getAllowance(
+			this.config.chain.id,
+			account.address,
+			this.config.token_address
+		)
+
+		if (allowance > 0) {
+			return
+		}
+
 		const approveTx = await this.oneInchClient.generateApprove({
 			chainId: this.config.chain.id,
 			tokenAddress: this.config.token_address
@@ -140,7 +153,7 @@ export class Program {
 				? `Buy ${formatEther(BigInt(dstAmount))} ${this.tokenSymbol} @ ${formatEther(BigInt(amount))} ETH`
 				: `Sell ${formatEther(amount)} ${this.tokenSymbol} @ ${formatEther(BigInt(dstAmount))} ETH`
 
-		this.logger.info(message)
+		Logger.info(message)
 	}
 
 	private async transferEth({ amount, from, to }: TransferParams) {
@@ -158,7 +171,7 @@ export class Program {
 	private async transferToken({ amount, from, to }: TransferParams) {
 		const hash = await this.wallet.writeContract({
 			address: this.config.token_address,
-			abi: ERC20,
+			abi: erc20Abi,
 			account: from,
 			functionName: "transfer",
 			chain: this.config.chain,
@@ -166,11 +179,6 @@ export class Program {
 		})
 
 		await this.rpcClient.waitForTransactionReceipt({ hash })
-
-		console.log(
-			`transfered tokens from ${from.address} to ${to}`,
-			Number(formatEther(amount))
-		)
 	}
 
 	private async createNewAccountAndTransfer(
@@ -185,25 +193,24 @@ export class Program {
 
 		const tokenBalance = await this.rpcClient.readContract({
 			address: this.config.token_address,
-			abi: ERC20,
+			abi: erc20Abi,
 			functionName: "balanceOf",
 			args: [previousAccount.address]
 		})
+
+		const encrypted = encryptWallet({
+			address: newAccount.address,
+			privateKey: randomPk,
+			createdAt: DateTime.now()
+		})
+
+		await fs.appendFile("evm-wallets.txt", `\n${encrypted}`)
 
 		await this.transferToken({
 			from: previousAccount,
 			to: newAccount.address,
 			amount: bigintPercent(tokenBalance, 99)
 		})
-
-		/// only write wallet to file if transfer success
-		const data = JSON.stringify({
-			address: newAccount.address,
-			privateKey: randomPk,
-			createdAt: DateTime.now().toISO()
-		})
-
-		await fs.appendFile("evm-wallets.txt", `\n${data}`)
 
 		const gasPrice = await this.rpcClient.getGasPrice()
 

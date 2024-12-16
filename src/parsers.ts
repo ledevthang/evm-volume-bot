@@ -4,7 +4,7 @@ import { z } from "zod"
 export const evmAddress = () =>
 	z
 		.string()
-		.transform(str => str.trim().toLocaleLowerCase())
+		.transform(str => str.trim().toLowerCase())
 		.refine(isAddress, "invalid ethereum address")
 
 export const notEmptyStr = () =>
