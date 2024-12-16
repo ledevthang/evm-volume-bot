@@ -9,6 +9,6 @@
 	"consecutive_sells": 2,
 	"wait_time_min": 2,
 	"wait_time_max": 4,
-	"min_weth": 0.01,
-	"max_weth": 0.04
+	"min_eth": 0.01,
+	"max_eth": 0.04
 }

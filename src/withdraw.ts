@@ -1,42 +1,37 @@
-// import {
-// 	type Address,
-// 	createPublicClient,
-// 	createWalletClient,
-// 	fallback,
-// 	type Hex,
-// 	http
-// } from "viem"
-// import { parseConfig } from "./parse-config.js"
-// import { privateKeyToAccount } from "viem/accounts"
-// import fs from "node:fs"
-// import { Program } from "./program.js"
+import { Program } from "./program.js"
+import { parseConfig } from "./parse-config.js"
+import { privateKeyToAccount } from "viem/accounts"
+import {
+	createPublicClient,
+	createWalletClient,
+	erc20Abi,
+	fallback,
+	http
+} from "viem"
 
-// async function main() {
-// 	const { config, pk, rpc1, rpc2 } = parseConfig()
+async function main() {
+	const config = parseConfig()
 
-// 	const transport = fallback([http(rpc1), http(rpc2)])
+	const transport = fallback([http(config.rpc_url)])
 
-// 	const rpcClient = createPublicClient({
-// 		transport
-// 	})
+	const rpcClient = createPublicClient({
+		transport
+	})
 
-// 	const mainWalletClient = createWalletClient({
-// 		transport,
-// 		account: privateKeyToAccount(pk)
-// 	})
+	const wallet = createWalletClient({
+		transport,
+		account: privateKeyToAccount(config.private_key)
+	})
 
-// 	const program = new Program(mainWalletClient, rpcClient, config)
+	const symbol = await rpcClient.readContract({
+		abi: erc20Abi,
+		functionName: "symbol",
+		address: config.token_address
+	})
 
-// 	const wallets: {
-// 		address: Address
-// 		privateKey: Hex
-// 	}[] = fs
-// 		.readFileSync("evm-wallets.txt", "utf-8")
-// 		.split("\n")
-// 		.filter(s => !!s)
-// 		.map(s => JSON.parse(s))
+	const program = new Program(wallet, rpcClient, config, symbol)
 
-// 	await program.withdraw(wallets)
-// }
+	await program.withdraw()
+}
 
-// main()
+main()

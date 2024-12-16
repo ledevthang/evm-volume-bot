@@ -20,7 +20,7 @@ import { DateTime } from "luxon"
 import type { Config } from "./parse-config.js"
 import { Decimal } from "decimal.js"
 import { Logger } from "./logger.js"
-import { encryptWallet } from "./hashing.js"
+import { decryptWallet, encryptWallet } from "./hashing.js"
 
 const NATIVE = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" as const
 
@@ -74,9 +74,31 @@ export class Program {
 			)
 				return this.createNewAccountAndTransfer(account)
 
-			const randUiAmount = random(this.config.min_weth, this.config.max_weth)
+			const [ethBalance, tokenBalance] = await this.balance(account.address)
 
+			Logger.info("balance::", {
+				ethBalance: formatEther(ethBalance),
+				[`${this.tokenSymbol}Balance`]: formatEther(tokenBalance)
+			})
+
+			const randUiAmount = random(this.config.min_eth, this.config.max_eth)
 			const amount = parseEther(new Decimal(randUiAmount).toFixed())
+
+			if (isBuy && ethBalance < amount) {
+				Logger.error(
+					`Insufficient ETH for buy. Required: ${formatEther(amount)}, Available: ${formatEther(ethBalance)}`
+				)
+				await sleep(2_000)
+				continue
+			}
+
+			if (!isBuy && tokenBalance < amount) {
+				Logger.error(
+					`Insufficient ${this.tokenSymbol} for sell. Required: ${formatEther(amount)}, Available: ${formatEther(tokenBalance)}`
+				)
+				await sleep(2_000)
+				continue
+			}
 
 			await this.swap({
 				account,
@@ -187,16 +209,7 @@ export class Program {
 		const randomPk = generatePrivateKey()
 		const newAccount = privateKeyToAccount(randomPk)
 
-		let ethBalance = await this.rpcClient.getBalance({
-			address: previousAccount.address
-		})
-
-		const tokenBalance = await this.rpcClient.readContract({
-			address: this.config.token_address,
-			abi: erc20Abi,
-			functionName: "balanceOf",
-			args: [previousAccount.address]
-		})
+		let [ethBalance, tokenBalance] = await this.balance(previousAccount.address)
 
 		const encrypted = encryptWallet({
 			address: newAccount.address,
@@ -236,5 +249,99 @@ export class Program {
 
 	private account(): Account {
 		return this.wallet.account!
+	}
+
+	private async balance(address: Address) {
+		const ethBalance = await this.rpcClient.getBalance({
+			address
+		})
+
+		const tokenBalance = await this.rpcClient.readContract({
+			address: this.config.token_address,
+			abi: erc20Abi,
+			functionName: "balanceOf",
+			args: [address]
+		})
+
+		return [ethBalance, tokenBalance]
+	}
+
+	public async withdraw() {
+		const wallets = await fs
+			.readFile("evm-wallets.txt", "utf8")
+			.then(rawLines => rawLines.split("\n"))
+			.then(lines => lines.filter(Boolean))
+			.then(rawWallets => rawWallets.map(decryptWallet))
+
+		for (const wallet of wallets) {
+			let [ethBalance, tokenBalance] = await this.balance(wallet.address)
+
+			const account = privateKeyToAccount(wallet.privateKey)
+
+			if (tokenBalance > BigInt(0)) {
+				try {
+					await this.transferToken({
+						from: account,
+						to: this.account().address,
+						amount: tokenBalance
+					})
+
+					Logger.info(
+						`withdraw ${formatEther(tokenBalance)} ${this.tokenSymbol} from ${account.address}`
+					)
+				} catch (error: any) {
+					Logger.error(
+						`withdraw error: ${JSON.stringify(
+							{
+								code: error?.code,
+								name: error?.name,
+								details: error?.details
+							},
+							null,
+							1
+						)}`
+					)
+				}
+			}
+
+			if (ethBalance > BigInt(0)) {
+				try {
+					const gasPrice = await this.rpcClient.getGasPrice()
+
+					const transferEthGas = await this.rpcClient.estimateGas({
+						to: this.account().address,
+						account
+					})
+
+					ethBalance = await this.rpcClient.getBalance({
+						address: account.address
+					})
+
+					const ethNeedToTransfer = ethBalance - transferEthGas * gasPrice
+
+					await this.transferEth({
+						from: account,
+						to: this.account().address,
+						amount: ethNeedToTransfer
+					})
+
+					Logger.info(
+						`withdraw ${formatEther(ethNeedToTransfer)} ETH from ${account.address}`
+					)
+				} catch (error: any) {
+					Logger.error(
+						`withdraw error: ${JSON.stringify(
+							{
+								code: error?.code,
+								name: error?.name,
+								details: error?.details
+							},
+							null,
+							1
+						)}`
+					)
+				}
+			}
+		}
 	}
 }

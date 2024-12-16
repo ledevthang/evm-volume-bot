@@ -22,7 +22,7 @@ export async function tryToInsufficient<T>(
 						1
 					)}`
 				)
-			else {
+			else if (error.details) {
 				Logger.error(
 					`RPC request error: ${JSON.stringify(
 						{
@@ -34,7 +34,7 @@ export async function tryToInsufficient<T>(
 						1
 					)}`
 				)
-			}
+			} else Logger.error(error)
 
 			return !isInsufficientError(error)
 		}
@@ -64,9 +64,9 @@ export function randomInt(min: number, max: number) {
 	return Math.floor(Math.random() * (maxFloored - minCeiled + 1) + minCeiled)
 }
 
-// The maximum is inclusive and the minimum is inclusive
+// The maximum is exclusive and the minimum is inclusive
 export function random(min: number, max: number) {
-	return Math.floor(Math.random() * (max - min + 1)) + min
+	return Math.random() * (max - min) + min
 }
 
 // type RpcReqError =

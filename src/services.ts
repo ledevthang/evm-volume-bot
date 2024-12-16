@@ -2,7 +2,6 @@ import axios from "axios"
 import type { Address, Hex } from "viem"
 import { sleep } from "./utils.js"
 import { DateTime } from "luxon"
-import { retry } from "ts-retry-promise"
 
 type GenerateApproveParams = {
 	chainId: number
@@ -139,11 +138,7 @@ export class OneInch {
 
 		this.lastimeCalling = DateTime.now()
 
-		const result = await retry(thunk, {
-			retries: 6,
-			delay: 1500,
-			timeout: "INFINITELY"
-		})
+		const result = await thunk()
 
 		await sleep(this.restTimeInMiliSeconds)
 
