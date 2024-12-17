@@ -60,13 +60,10 @@ export class Program {
 
 		let buyCount = 0
 		let sellCount = 0
+		let isBuy = true
 
 		for (;;) {
-			let isBuy = Boolean(randomInt(0, 1))
-
 			if (buyCount === this.config.consecutive_buys) isBuy = false
-
-			if (sellCount === this.config.consecutive_sells) isBuy = true
 
 			if (
 				buyCount >= this.config.consecutive_buys &&
