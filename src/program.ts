@@ -8,13 +8,7 @@ import {
 	type Account,
 	erc20Abi
 } from "viem"
-import {
-	bigintPercent,
-	random,
-	randomInt,
-	sleep,
-	tryToInsufficient
-} from "./utils.js"
+import { bigintPercent, random, sleep, tryToInsufficient } from "./utils.js"
 import { OneInch } from "./services.js"
 import { DateTime } from "luxon"
 import type { Config } from "./parse-config.js"
