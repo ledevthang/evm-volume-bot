@@ -3,8 +3,18 @@ import { evmAddress, notEmptyStr, positiveNumber } from "./parsers.js"
 import fs from "node:fs"
 import { avalanche, mainnet } from "viem/chains"
 import { isHex } from "viem"
+import path from "node:path"
 
 export type Config = z.infer<typeof schema>
+
+const processDir = process.cwd()
+
+export const encryptedFilePath = path.resolve(processDir, "evm-wallets.txt")
+
+export const decryptedFilePath = path.resolve(
+	processDir,
+	"evm-decoded-wallets.txt"
+)
 
 const schema = z.object({
 	private_key: notEmptyStr().refine(isHex, "expected a hex string"),
@@ -32,7 +42,12 @@ const schema = z.object({
 })
 
 export function parseConfig() {
-	const raw = fs.readFileSync("config.json", "utf-8")
+	const configFilePath = path
+		.resolve(import.meta.dirname, "config.json")
+		.replace("/dist", "")
 
-	return schema.parse(JSON.parse(raw))
+	const config = schema.parse(
+		JSON.parse(fs.readFileSync(configFilePath, "utf-8"))
+	)
+	return config
 }

@@ -11,7 +11,7 @@ import {
 import { bigintPercent, random, sleep, tryToInsufficient } from "./utils.js"
 import { OneInch } from "./services.js"
 import { DateTime } from "luxon"
-import type { Config } from "./parse-config.js"
+import { encryptedFilePath, type Config } from "./parse-config.js"
 import { Decimal } from "decimal.js"
 import { Logger } from "./logger.js"
 import { decryptWallet, encryptWallet } from "./hashing.js"
@@ -44,6 +44,7 @@ export class Program {
 	public async run() {
 		Logger.info(`Starting evm volume bot for ${this.tokenSymbol}...`)
 		Logger.info(`Beginning with wallet: ${this.account().address}`)
+		Logger.newLine()
 
 		let account = this.account()
 
@@ -127,6 +128,9 @@ export class Program {
 
 			const restTime =
 				random(this.config.wait_time_min, this.config.wait_time_max) * 1000
+
+			Logger.info("Sleeping...before next order")
+			Logger.newLine()
 
 			await sleep(restTime)
 		}
@@ -224,6 +228,8 @@ export class Program {
 		const randomPk = generatePrivateKey()
 		const newAccount = privateKeyToAccount(randomPk)
 
+		Logger.info(`Created a new wallet ${newAccount.address}`)
+
 		let [ethBalance, tokenBalance] = await this.balance(previousAccount.address)
 
 		const encrypted = encryptWallet({
@@ -232,7 +238,7 @@ export class Program {
 			createdAt: DateTime.now()
 		})
 
-		await fs.appendFile("evm-wallets.txt", `\n${encrypted}`)
+		await fs.appendFile(encryptedFilePath, `\n${encrypted}`)
 
 		await this.transferToken({
 			from: previousAccount,
@@ -258,6 +264,9 @@ export class Program {
 			to: newAccount.address,
 			amount: ethNeedToTransfer
 		})
+
+		Logger.info("Transfered 99% assets")
+		Logger.newLine()
 
 		return newAccount
 	}
