@@ -3,6 +3,7 @@ import { isAxiosError } from "axios"
 import { Logger } from "./logger.js"
 
 export async function tryToInsufficient<T>(
+	context: string,
 	thunk: () => Promise<T>
 ): Promise<T> {
 	return retry(thunk, {
@@ -35,6 +36,8 @@ export async function tryToInsufficient<T>(
 					)}`
 				)
 			} else Logger.error(error)
+
+			Logger.info(`retrying ${context}...`)
 
 			return !isInsufficientError(error)
 		}

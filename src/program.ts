@@ -42,61 +42,85 @@ export class Program {
 	) {}
 
 	public async run() {
+		Logger.info(`Starting evm volume bot for ${this.tokenSymbol}...`)
+		Logger.info(`Beginning with wallet: ${this.account().address}`)
+
 		let account = this.account()
 
 		for (;;) {
-			account = await tryToInsufficient(() => this.executeTrades(account))
+			account = await this.executeTrades(account)
 		}
 	}
 
 	private async executeTrades(account: Account): Promise<Account> {
-		await this.approveSwap(account)
+		await tryToInsufficient("approve", () => this.approveSwap(account))
 
 		let buyCount = 0
 		let sellCount = 0
-		let isBuy = true
+		let isBuy = this.config.start_with_buy
 
 		for (;;) {
 			if (buyCount === this.config.consecutive_buys) isBuy = false
 
+			if (sellCount === this.config.consecutive_sells) isBuy = true
+
 			if (
 				buyCount >= this.config.consecutive_buys &&
 				sellCount >= this.config.consecutive_sells
-			)
-				return this.createNewAccountAndTransfer(account)
-
-			const [ethBalance, tokenBalance] = await this.balance(account.address)
-
-			Logger.info("balance::", {
-				ethBalance: formatEther(ethBalance),
-				[`${this.tokenSymbol}Balance`]: formatEther(tokenBalance)
-			})
-
-			const randUiAmount = random(this.config.min_eth, this.config.max_eth)
-			const amount = parseEther(new Decimal(randUiAmount).toFixed())
-
-			if (isBuy && ethBalance < amount) {
-				Logger.error(
-					`Insufficient ETH for buy. Required: ${formatEther(amount)}, Available: ${formatEther(ethBalance)}`
+			) {
+				const newAccount = await tryToInsufficient("transfer assets", () =>
+					this.createNewAccountAndTransfer(account)
 				)
-				await sleep(2_000)
-				continue
+				return newAccount
 			}
 
-			if (!isBuy && tokenBalance < amount) {
-				Logger.error(
-					`Insufficient ${this.tokenSymbol} for sell. Required: ${formatEther(amount)}, Available: ${formatEther(tokenBalance)}`
-				)
-				await sleep(2_000)
-				continue
-			}
+			const ok = await tryToInsufficient("swap", async () => {
+				const [ethBalance, tokenBalance] = await this.balance(account.address)
 
-			await this.swap({
-				account,
-				amount,
-				src: isBuy ? NATIVE : this.config.token_address,
-				dst: isBuy ? this.config.token_address : NATIVE
+				Logger.info(account.address, "::", {
+					ethBalance: formatEther(ethBalance),
+					[`${this.tokenSymbol}Balance`]: formatEther(tokenBalance)
+				})
+
+				let randUiAmount = random(this.config.min_eth, this.config.max_eth)
+
+				if (!isBuy) {
+					const ethOnTokenRate = await this.calculatePrice()
+
+					randUiAmount = new Decimal(randUiAmount)
+						.mul(ethOnTokenRate)
+						.toNumber()
+				}
+
+				const amount = parseEther(new Decimal(randUiAmount).toFixed())
+
+				if (isBuy && ethBalance < amount) {
+					Logger.error(
+						`Insufficient ETH for buy. Required: ${formatEther(amount)}, Available: ${formatEther(ethBalance)}`
+					)
+					await sleep(2_000)
+					return
+				}
+
+				if (!isBuy && tokenBalance < amount) {
+					Logger.error(
+						`Insufficient ${this.tokenSymbol} for sell. Required: ${formatEther(amount)}, Available: ${formatEther(tokenBalance)}`
+					)
+					await sleep(2_000)
+					return
+				}
+
+				await this.swap({
+					account,
+					amount,
+					src: isBuy ? NATIVE : this.config.token_address,
+					dst: isBuy ? this.config.token_address : NATIVE
+				})
+
+				return 1
 			})
+
+			if (!ok) continue
 
 			if (isBuy) buyCount++
 			else sellCount++
@@ -236,6 +260,14 @@ export class Program {
 		})
 
 		return newAccount
+	}
+
+	private async calculatePrice() {
+		const price = await this.oneInchClient.spotPrice(this.config.chain.id, [
+			NATIVE,
+			this.config.token_address
+		])
+		return new Decimal(price[NATIVE]).div(price[this.config.token_address])
 	}
 
 	private account(): Account {

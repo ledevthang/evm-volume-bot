@@ -14,4 +14,8 @@ export class Logger {
 			...args
 		)
 	}
+
+	static newLine() {
+		console.log("")
+	}
 }
