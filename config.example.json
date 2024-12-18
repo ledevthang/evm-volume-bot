@@ -1,0 +1,14 @@
+{
+	"private_key": "",
+	"one_inch_api_key": "",
+	"rpc_url": "",
+	"chain": "avax",
+	"token_address": "0xb31f66aa3c1e785363f0875a1b74e27b85fd66c7",
+	"slippage": 0.5,
+	"consecutive_buys": 3,
+	"consecutive_sells": 2,
+	"wait_time_min": 2,
+	"wait_time_max": 4,
+	"min_eth": 0.01,
+	"max_eth": 0.04
+}

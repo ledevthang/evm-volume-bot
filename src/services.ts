@@ -1,13 +1,12 @@
-import axios, { type AxiosError, isAxiosError } from "axios"
+import axios from "axios"
 import type { Address, Hex } from "viem"
 import { sleep } from "./utils.js"
 import { DateTime } from "luxon"
-import { retry } from "ts-retry-promise"
 
 type GenerateApproveParams = {
 	chainId: number
 	tokenAddress: Address
-	amount?: bigint
+	amount?: bigint // If not specified, it will be allowed to spend an infinite amount of tokens.
 }
 
 type GenerateApproveResponse = {
@@ -52,17 +51,23 @@ export class OneInch {
 	private restTimeInMiliSeconds = 3000
 
 	generateApprove(params: GenerateApproveParams) {
-		return this.handle429(() => this.unsafeGenerateApprove(params))
+		return this.handleLimit(() => this.unsafeGenerateApprove(params))
 	}
 
 	generateSwapCallData(chainId: number, params: SwapParams) {
-		return this.handle429(() =>
+		return this.handleLimit(() =>
 			this.unsafeGenerateSwapCallData(chainId, params)
 		)
 	}
 
 	spotPrice<T extends Address>(chainId: number, address: T[]) {
-		return this.handle429(() => this.unsafeSpotPrice(chainId, address))
+		return this.handleLimit(() => this.unsafeSpotPrice(chainId, address))
+	}
+
+	getAllowance(chainId: number, walletAddress: Address, tokenAddress: Address) {
+		return this.handleLimit(() =>
+			this.unsafeGetAllowance(chainId, walletAddress, tokenAddress)
+		)
 	}
 
 	private async unsafeGenerateApprove({
@@ -105,7 +110,25 @@ export class OneInch {
 		return response.data
 	}
 
-	private async handle429<T>(thunk: () => Promise<T>): Promise<T> {
+	private async unsafeGetAllowance(
+		chainId: number,
+		walletAddress: Address,
+		tokenAddress: Address
+	) {
+		const response = await this.AXIOS.get<{ allowance: string }>(
+			`${chainId}/approve/allowance`,
+			{
+				params: {
+					walletAddress,
+					tokenAddress
+				}
+			}
+		)
+
+		return BigInt(response.data.allowance)
+	}
+
+	private async handleLimit<T>(thunk: () => Promise<T>): Promise<T> {
 		while (
 			DateTime.now().toSeconds() - this.lastimeCalling.toSeconds() >
 			this.restTimeInMiliSeconds
@@ -115,35 +138,10 @@ export class OneInch {
 
 		this.lastimeCalling = DateTime.now()
 
-		const result = await retry(thunk, {
-			retries: 6,
-			delay: 1500,
-			timeout: "INFINITELY"
-		}).catch(error => {
-			if (isAxiosError(error)) throw new OneInchError(error)
-			throw error
-		})
+		const result = await thunk()
 
 		await sleep(this.restTimeInMiliSeconds)
 
 		return result
-	}
-}
-
-export class OneInchError {
-	constructor(private error: AxiosError) {}
-
-	public display() {
-		console.error(
-			`OneInch Error: ${JSON.stringify(
-				{
-					code: this.error.code,
-					message: this.error.message,
-					response: this.error.response?.data
-				},
-				null,
-				1
-			)}`
-		)
 	}
 }
